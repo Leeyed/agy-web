@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .config import BRAIN_DIR, LAST_SESSION_FILE
+from .config import BRAIN_DIR, LAST_SESSION_FILE, load_allowed_roots
 from .files import extract_images_from_text
 from .quota import fetch_agy_quota
 from .transcript import (
@@ -118,6 +118,9 @@ class SessionManager:
         self.mode = mode
         self.model = ""
         self.allowed_roots = [self.cwd, Path.home(), BRAIN_DIR]
+        for root in load_allowed_roots():
+            if root not in self.allowed_roots:
+                self.allowed_roots.append(root)
         self._lock = threading.RLock()
         self._draft_counter = 1
         init_key = initial_conversation_id or "draft-1"

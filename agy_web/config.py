@@ -40,6 +40,19 @@ def load_nodes() -> List[Dict[str, Any]]:
     raw = cfg.get("nodes")
     return raw if isinstance(raw, list) else []
 
+
+def load_allowed_roots() -> List[Path]:
+    cfg = _load_config()
+    raw = cfg.get("allowed_roots")
+    if not isinstance(raw, list):
+        return []
+    out: List[Path] = []
+    for item in raw:
+        s = str(item or "").strip()
+        if s:
+            out.append(Path(s).expanduser().resolve())
+    return out
+
 BRAIN_DIR = Path.home() / ".gemini" / "antigravity-cli" / "brain"
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}
 SAFE_FILE_EXTS = IMAGE_EXTS | {".json", ".txt", ".log", ".md"}
