@@ -18,6 +18,7 @@ const modeSelect = document.getElementById('modeSelect');
 const sessionStats = document.getElementById('sessionStats');
 const imgModal = document.getElementById('imgModal');
 const modalTitle = document.getElementById('modalTitle');
+const modalOrigBtn = document.getElementById('modalOrigBtn');
 const modalRawLink = document.getElementById('modalRawLink');
 const modalBody = document.getElementById('modalBody');
 const modalClose = document.getElementById('modalClose');
@@ -174,6 +175,7 @@ function applyZoomTransform(img) {
 
 function closeModal() {
   _modalView = null;
+  modalOrigBtn.style.display = 'none';
   imgModal.classList.remove('open');
   modalBody.classList.remove('gallery-mode');
   zoomState = { scale: 1, tx: 0, ty: 0 };
@@ -260,14 +262,39 @@ function attachImageZoomAndTapClose(img) {
   };
 }
 
-function openImage(url, label) {
-  url = withNode(url);
+async function openImage(url, label) {
+  const baseUrl = url.replace(/[&?](thumb|preview)=1/g, '');
+  const fullUrl = withNode(baseUrl);
   modalTitle.textContent = label || 'Image Preview';
+  modalOrigBtn.style.display = 'none';
+  modalOrigBtn.onclick = null;
   modalRawLink.style.display = 'inline-block';
-  modalRawLink.href = url;
+  modalRawLink.href = fullUrl;
   modalBody.classList.remove('gallery-mode');
   zoomState = { scale: 1, tx: 0, ty: 0 };
-  modalBody.innerHTML = `<img id="zoomImg" src="${url}" alt="${esc(label)}" />`;
+
+  let displayUrl = fullUrl;
+  const pm = baseUrl.match(/[?&]path=([^&]+)/);
+  if (pm) {
+    try {
+      const infoRes = await fetch('/api/file-info?path=' + pm[1]);
+      if (infoRes.ok) {
+        const info = await infoRes.json();
+        if (info && info.size > 3 * 1024 * 1024) {
+          displayUrl = withNode(baseUrl + (baseUrl.includes('?') ? '&' : '?') + 'preview=1');
+          modalOrigBtn.textContent = `原图 (${fmtSize(info.size)})`;
+          modalOrigBtn.style.display = 'inline-block';
+          modalOrigBtn.onclick = () => {
+            const zImg = document.getElementById('zoomImg');
+            if (zImg) zImg.src = fullUrl;
+            modalOrigBtn.style.display = 'none';
+          };
+        }
+      }
+    } catch (e) {}
+  }
+
+  modalBody.innerHTML = `<img id="zoomImg" src="${displayUrl}" alt="${esc(label)}" />`;
   const img = document.getElementById('zoomImg');
   attachImageZoomAndTapClose(img);
   imgModal.classList.add('open');

@@ -498,6 +498,29 @@ def make_handler(session: SessionManager, auth_password: str = "", max_devices: 
                 self._send_json({"path": str(resolved), "content": content})
                 return
 
+            if parsed.path == "/api/file-info":
+                qs = urllib.parse.parse_qs(parsed.query)
+                raw_path = qs.get("path", [""])[0]
+                if not raw_path:
+                    self._send_json({"error": "missing path"}, status=400)
+                    return
+                target = Path(raw_path)
+                if not target.is_absolute():
+                    target = session.cwd / target
+                try:
+                    resolved = target.resolve()
+                except OSError:
+                    self._send_json({"error": "invalid path"}, status=400)
+                    return
+                if not is_within_roots(resolved, session.allowed_roots):
+                    self._send_json({"error": "forbidden"}, status=403)
+                    return
+                if not resolved.is_file() or resolved.suffix.lower() not in SAFE_FILE_EXTS:
+                    self._send_json({"error": "not found or unsupported"}, status=404)
+                    return
+                self._send_json({"size": resolved.stat().st_size, "name": resolved.name})
+                return
+
             if parsed.path == "/api/file":
                 qs = urllib.parse.parse_qs(parsed.query)
                 raw_path = qs.get("path", [""])[0]
@@ -519,8 +542,10 @@ def make_handler(session: SessionManager, auth_password: str = "", max_devices: 
                     self._send_json({"error": "not found or unsupported"}, status=404)
                     return
                 is_thumb = qs.get("thumb", ["0"])[0] == "1"
+                is_preview = qs.get("preview", ["0"])[0] == "1"
+                mode_tag = "thumb" if is_thumb else ("preview" if is_preview else "orig")
                 st = resolved.stat()
-                etag = f'"{st.st_mtime_ns}-{st.st_size}-{int(is_thumb)}"'
+                etag = f'"{st.st_mtime_ns}-{st.st_size}-{mode_tag}"'
                 if self.headers.get("If-None-Match") == etag:
                     self.send_response(HTTPStatus.NOT_MODIFIED)
                     self.send_header("ETag", etag)
@@ -530,8 +555,8 @@ def make_handler(session: SessionManager, auth_password: str = "", max_devices: 
 
                 ctype, _ = mimetypes.guess_type(str(resolved))
                 data: Optional[bytes] = None
-                if is_thumb and resolved.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
-                    cache_key = (str(resolved), st.st_mtime_ns)
+                if (is_thumb or is_preview) and resolved.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
+                    cache_key = (str(resolved), st.st_mtime_ns, mode_tag)
                     cached = getattr(session, "_thumb_cache", {}).get(cache_key)
                     if cached is not None:
                         data = cached
@@ -542,12 +567,14 @@ def make_handler(session: SessionManager, auth_password: str = "", max_devices: 
                             from collections import OrderedDict
                             from PIL import Image
 
+                            max_dim = (480, 480) if is_thumb else (1440, 1440)
+                            quality = 75 if is_thumb else 82
                             with Image.open(resolved) as im:
-                                im.thumbnail((480, 480))
+                                im.thumbnail(max_dim)
                                 if im.mode != "RGB":
                                     im = im.convert("RGB")
                                 buf = io.BytesIO()
-                                im.save(buf, format="JPEG", quality=75, optimize=True)
+                                im.save(buf, format="JPEG", quality=quality, optimize=True)
                                 data = buf.getvalue()
                                 ctype = "image/jpeg"
                                 tc = getattr(session, "_thumb_cache", None)
