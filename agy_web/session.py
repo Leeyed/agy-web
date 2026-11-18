@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import shutil
 import signal
+import socket
 import subprocess
 import threading
 import time
@@ -27,14 +29,22 @@ from .transcript import (
 )
 
 
+def _host_last_session_file() -> Path:
+    host = re.sub(r"[^A-Za-z0-9_.-]+", "_", socket.gethostname() or "default").strip("_") or "default"
+    return LAST_SESSION_FILE.with_name(f"last_session_{host}.json")
+
+
 def load_last_session() -> str:
-    try:
-        if LAST_SESSION_FILE.is_file():
-            data = json.loads(LAST_SESSION_FILE.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                return str(data.get("conversation_id") or "").strip()
-    except Exception:
-        pass
+    for path in (_host_last_session_file(), LAST_SESSION_FILE):
+        try:
+            if path.is_file():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    cid = str(data.get("conversation_id") or "").strip()
+                    if cid:
+                        return cid
+        except Exception:
+            pass
     latest = list_existing_conversations(limit=1)
     return str(latest[0]["id"]) if latest else ""
 
@@ -43,7 +53,7 @@ def _save_last_session(cid: str) -> None:
     if not cid:
         return
     try:
-        LAST_SESSION_FILE.write_text(
+        _host_last_session_file().write_text(
             json.dumps({"conversation_id": cid}, ensure_ascii=False),
             encoding="utf-8",
         )

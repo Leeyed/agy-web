@@ -4,6 +4,6 @@ config.json
 session_names.json
 session_models.json
 authorized_devices.json
-last_session.json
+last_session*.json
 *.crt
 *.key
