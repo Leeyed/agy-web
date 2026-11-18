@@ -51,16 +51,31 @@ def _save_last_session(cid: str) -> None:
         pass
 
 def _terminate_proc(proc: Optional[subprocess.Popen[str]], timeout: float = 2.0) -> None:
-    """Best-effort terminate a subprocess, escalating to SIGKILL on timeout."""
+    """Best-effort terminate a subprocess and its process group, escalating to SIGKILL on timeout."""
     if proc is None or proc.poll() is not None:
         return
     try:
-        proc.terminate()
+        pgid = os.getpgid(proc.pid)
+        os.killpg(pgid, signal.SIGTERM)
+    except Exception:
         try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+            proc.terminate()
+        except Exception:
+            return
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        try:
             proc.wait(timeout=1.0)
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -435,9 +450,12 @@ class SessionManager:
         stderr_lines: List[str] = []
         turn_t0 = time.monotonic()
         try:
+            proc_env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
             proc = subprocess.Popen(
                 cmd,
                 cwd=str(self.cwd),
+                env=proc_env,
+                start_new_session=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
