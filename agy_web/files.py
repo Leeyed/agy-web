@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -48,18 +49,37 @@ def extract_images_from_text(text: str, cwd: Path, allowed_roots: List[Path]) ->
     return found
 
 
-def list_recent_images(cwd: Path, limit: int = 30) -> List[Dict[str, Any]]:
-    skip_dirs = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache"}
+def list_recent_images(
+    cwd: Path,
+    limit: int = 30,
+    max_depth: int = 5,
+    max_entries: int = 8000,
+    time_budget: float = 1.5,
+) -> List[Dict[str, Any]]:
+    skip_dirs = {".git", ".venv", "venv", "__pycache__", "node_modules", ".pytest_cache", "wandb", "mlruns"}
     items: List[Tuple[float, Path]] = []
+    t0 = time.monotonic()
+    seen_entries = 0
+    base_parts = len(cwd.parts)
     for root, dirs, files in os.walk(cwd):
-        dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith(".")]
+        depth = len(Path(root).parts) - base_parts
+        if depth >= max_depth:
+            dirs[:] = []
+        else:
+            dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith(".")]
         for fname in files:
+            seen_entries += 1
+            if seen_entries > max_entries or (seen_entries % 256 == 0 and time.monotonic() - t0 > time_budget):
+                dirs[:] = []
+                break
             p = Path(root) / fname
             if p.suffix.lower() in IMAGE_EXTS:
                 try:
                     items.append((p.stat().st_mtime, p))
                 except OSError:
                     pass
+        if time.monotonic() - t0 > time_budget or seen_entries > max_entries:
+            break
     items.sort(key=lambda x: x[0], reverse=True)
     result = []
     for mtime, p in items[:limit]:

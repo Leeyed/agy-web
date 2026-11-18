@@ -741,13 +741,24 @@ let _browseDir = '';
 async function openGallery(silent) {
   _modalView = 'gallery';
   const prevScroll = silent ? modalBody.scrollTop : 0;
-  const res = await fetch('/api/recent-images');
-  const data = await res.json();
-  if (_modalView !== 'gallery') return;
-  modalTitle.textContent = `Recent Images (${data.images.length})`;
-  modalRawLink.style.display = 'none';
   clearModalHandlers();
   modalBody.classList.add('gallery-mode');
+  modalRawLink.style.display = 'none';
+  if (!silent) {
+    modalTitle.textContent = 'Images';
+    modalBody.innerHTML = '<div style="color:#9ca3af">Loading...</div>';
+    imgModal.classList.add('open');
+  }
+  const res = await fetch('/api/recent-images');
+  const data = await res.json().catch(() => ({}));
+  if (_modalView !== 'gallery') return;
+  if (!res.ok || !Array.isArray(data.images)) {
+    modalTitle.textContent = 'Recent Images';
+    modalBody.innerHTML = `<div style="color:#f87171">${esc(data.error || 'Failed to load images')}</div>`;
+    imgModal.classList.add('open');
+    return;
+  }
+  modalTitle.textContent = `Recent Images (${data.images.length})`;
   if (!data.images.length) {
     modalBody.innerHTML = '<div style="color:#9ca3af">No images found</div>';
   } else {
