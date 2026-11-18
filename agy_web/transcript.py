@@ -25,26 +25,42 @@ def _read_transcript_lines(cid: str) -> List[Dict[str, Any]]:
     full = BRAIN_DIR / cid / ".system_generated" / "logs" / "transcript_full.jsonl"
     if not compact.is_file():
         return []
-    full_lines: Optional[List[str]] = None
+    full_f = full.open("r", encoding="utf-8", errors="replace") if full.is_file() else None
+    full_idx = -1
     records: List[Dict[str, Any]] = []
-    with compact.open("r", encoding="utf-8", errors="replace") as f:
-        for idx, line in enumerate(f):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if obj.get("truncated_fields") and full.is_file():
-                if full_lines is None:
-                    full_lines = full.read_text(encoding="utf-8", errors="replace").splitlines()
-                if idx < len(full_lines):
-                    try:
-                        obj = json.loads(full_lines[idx])
-                    except json.JSONDecodeError:
-                        pass
-            records.append(obj)
+    try:
+        with compact.open("r", encoding="utf-8", errors="replace") as f:
+            for idx, line in enumerate(f):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                trunc = obj.get("truncated_fields")
+                if (
+                    full_f is not None
+                    and trunc
+                    and obj.get("type") in ("USER_INPUT", "PLANNER_RESPONSE")
+                    and any(fld != "thinking" for fld in trunc)
+                ):
+                    while full_idx < idx:
+                        full_line = full_f.readline()
+                        full_idx += 1
+                        if not full_line:
+                            full_f.close()
+                            full_f = None
+                            break
+                    if full_f is not None and full_idx == idx and full_line.strip():
+                        try:
+                            obj = json.loads(full_line)
+                        except json.JSONDecodeError:
+                            pass
+                records.append(obj)
+    finally:
+        if full_f is not None:
+            full_f.close()
     return records
 
 
@@ -243,8 +259,10 @@ def parse_conversation_messages_and_usage(
             content = str(obj.get("content", "")).strip()
             if content:
                 cur_assistant["text"] = (cur_assistant["text"] + "\n\n" + content).strip() if cur_assistant["text"] else content
-                cur_assistant["images"] = extract_images_from_text(cur_assistant["text"], cwd, allowed_roots)
                 cur_assistant["time"] = hhmmss
+    for msg in messages:
+        if msg.get("role") == "assistant" and msg.get("text"):
+            msg["images"] = extract_images_from_text(msg["text"], cwd, allowed_roots)
     tot_in_all = usage["total_input_tokens"] + usage["total_cache_read_tokens"]
     usage["total_tokens"] = tot_in_all + usage["total_output_tokens"]
     usage["cache_pct"] = (usage["total_cache_read_tokens"] / tot_in_all * 100.0) if tot_in_all > 0 else 0.0

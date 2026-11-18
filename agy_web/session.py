@@ -13,16 +13,42 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .config import BRAIN_DIR
+from .config import BRAIN_DIR, LAST_SESSION_FILE
 from .files import extract_images_from_text
+from .quota import fetch_agy_quota
 from .transcript import (
     _load_session_models,
     _load_session_names,
     _save_session_model,
     _save_session_name,
     _short_tool_name,
+    list_existing_conversations,
     parse_conversation_messages_and_usage,
 )
+
+
+def load_last_session() -> str:
+    try:
+        if LAST_SESSION_FILE.is_file():
+            data = json.loads(LAST_SESSION_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return str(data.get("conversation_id") or "").strip()
+    except Exception:
+        pass
+    latest = list_existing_conversations(limit=1)
+    return str(latest[0]["id"]) if latest else ""
+
+
+def _save_last_session(cid: str) -> None:
+    if not cid:
+        return
+    try:
+        LAST_SESSION_FILE.write_text(
+            json.dumps({"conversation_id": cid}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
 
 def _terminate_proc(proc: Optional[subprocess.Popen[str]], timeout: float = 2.0) -> None:
     """Best-effort terminate a subprocess, escalating to SIGKILL on timeout."""
@@ -79,8 +105,33 @@ class SessionManager:
         }
         self._active_key: str = init_key
         self._cached_models: Optional[List[Dict[str, str]]] = None
+        self._quota: Dict[str, Dict[str, str]] = {}
+        self._quota_last_ts: float = 0.0
+        self._quota_refreshing: bool = False
         self._subscribers: List[queue.Queue[str]] = []
         threading.Thread(target=self._watch_transcript_loop, daemon=True).start()
+
+    def _refresh_quota_once(self) -> None:
+        try:
+            q = fetch_agy_quota(self.agy_bin)
+            if q:
+                with self._lock:
+                    self._quota = q
+                    self._quota_last_ts = time.monotonic()
+                self._broadcast_state()
+        except Exception:
+            pass
+        finally:
+            with self._lock:
+                self._quota_refreshing = False
+
+    def trigger_quota_refresh(self, min_interval: float = 5.0) -> bool:
+        with self._lock:
+            if self._quota_refreshing or (time.monotonic() - self._quota_last_ts < min_interval):
+                return False
+            self._quota_refreshing = True
+        threading.Thread(target=self._refresh_quota_once, daemon=True).start()
+        return True
 
     def _watch_transcript_loop(self) -> None:
         while True:
@@ -119,19 +170,28 @@ class SessionManager:
         total_tokens = int(u.get("total_tokens") or (tot_in + tot_cr + tot_out))
         in_sum = tot_in + tot_cr
         cache_pct = float(u.get("cache_pct") if "cache_pct" in u else ((tot_cr / in_sum * 100.0) if in_sum > 0 else 0.0))
+        model_name = str(slot.model or u.get("model") or "").lower()
+        q_group = "claude_gpt" if ("claude" in model_name or "gpt" in model_name) else "gemini"
+        q = self._quota.get(q_group) or self._quota.get("gemini") or {}
         return {
             "tps": slot.tps,
-            "h5": "-",
-            "weekly": "-",
+            "h5": q.get("h5", "-"),
+            "weekly": q.get("weekly", "-"),
             "total_tokens": total_tokens,
             "cache_pct": cache_pct,
         }
 
-    def snapshot(self) -> Dict[str, Any]:
+    def snapshot(self, limit: Optional[int] = 60) -> Dict[str, Any]:
         names = _load_session_names()
         with self._lock:
             slot = self._slots[self._active_key]
             bg_running = sum(1 for k, s in self._slots.items() if k != self._active_key and s.busy)
+            total_messages = len(slot.messages)
+            raw_msgs = slot.messages[-limit:] if (limit and limit > 0 and total_messages > limit) else slot.messages
+            msgs = [
+                {k: (list(v) if isinstance(v, list) else v) for k, v in m.items()}
+                for m in raw_msgs
+            ]
             return {
                 "busy": slot.busy,
                 "queued_count": len(slot.queue),
@@ -143,7 +203,8 @@ class SessionManager:
                 "model": slot.model,
                 "last_model": str((slot.last_usage or {}).get("model") or ""),
                 "stats": self._slot_stats(slot),
-                "messages": json.loads(json.dumps(slot.messages)),
+                "total_messages": total_messages,
+                "messages": msgs,
             }
 
     def update_settings(self, mode: Optional[str] = None, model: Optional[str] = None) -> None:
@@ -210,6 +271,7 @@ class SessionManager:
                 status = "running" if existing.busy else "idle"
                 switched_info = f"Switched to {cid[:8]} ({status}, messages={msg_count})"
         if switched_info is not None:
+            _save_last_session(cid)
             self._broadcast_state()
             return True, switched_info
 
@@ -238,6 +300,7 @@ class SessionManager:
                 if not slot.model:
                     slot.model = chosen_model
             self._active_key = cid
+        _save_last_session(cid)
         self._broadcast_state()
         return True, (
             f"Loaded {cid[:8]} | messages={len(msgs)} | model={chosen_model or usage.get('model') or 'default'} | "
@@ -419,6 +482,7 @@ class SessionManager:
                             self._active_key = new_cid
                         if slot.model:
                             _save_session_model(new_cid, slot.model)
+                        _save_last_session(new_cid)
                         changed = True
 
                     if ev_type == "step_update":

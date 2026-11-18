@@ -6,7 +6,7 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 CONFIG_FILE = Path(__file__).resolve().parent.parent / "config.json"
 
@@ -31,12 +31,22 @@ DEFAULT_PORT = int(_CFG.get("port") or 8088)
 DEFAULT_MODE = str(_CFG.get("mode") or "auto")
 if DEFAULT_MODE not in ("auto", "accept-edits", "plan"):
     DEFAULT_MODE = "auto"
+DEFAULT_PASSWORD = str(_CFG.get("password") or "").strip()
+DEFAULT_MAX_DEVICES = int(_CFG.get("max_devices") or 0)
+
+
+def load_nodes() -> List[Dict[str, Any]]:
+    cfg = _load_config()
+    raw = cfg.get("nodes")
+    return raw if isinstance(raw, list) else []
 
 BRAIN_DIR = Path.home() / ".gemini" / "antigravity-cli" / "brain"
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}
 SAFE_FILE_EXTS = IMAGE_EXTS | {".json", ".txt", ".log", ".md"}
 SESSION_NAMES_FILE = Path(__file__).resolve().parent.parent / "session_names.json"
 SESSION_MODELS_FILE = Path(__file__).resolve().parent.parent / "session_models.json"
+AUTHORIZED_DEVICES_FILE = Path(__file__).resolve().parent.parent / "authorized_devices.json"
+LAST_SESSION_FILE = Path(__file__).resolve().parent.parent / "last_session.json"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 

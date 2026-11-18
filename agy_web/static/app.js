@@ -3,6 +3,7 @@ const inputEl = document.getElementById('promptInput');
 const sendBtn = document.getElementById('sendBtn');
 const nowBtn = document.getElementById('nowBtn');
 const newChatBtn = document.getElementById('newChatBtn');
+const nodeSelect = document.getElementById('nodeSelect');
 const galleryBtn = document.getElementById('galleryBtn');
 const statusDot = document.getElementById('statusDot');
 const subInfo = document.getElementById('subInfo');
@@ -21,7 +22,24 @@ const modalRawLink = document.getElementById('modalRawLink');
 const modalBody = document.getElementById('modalBody');
 const modalClose = document.getElementById('modalClose');
 
-let state = { busy: false, conversation_id: null, cwd: '', mode: 'auto', model: '', messages: [] };
+let state = { busy: false, conversation_id: null, cwd: '', mode: 'auto', model: '', messages: [], total_messages: 0 };
+let _fullMsgsCache = null;
+let _switchingSession = false;
+let _currentNode = localStorage.getItem('agy_node') || 'local';
+let _sse = null;
+let _sseTimer = null;
+
+function withNode(url) {
+  if (!_currentNode || _currentNode === 'local') return url;
+  if (!url.startsWith('/api/') || url.startsWith('/api/nodes') || url.startsWith('/api/login')) return url;
+  return url + (url.includes('?') ? '&' : '?') + 'node=' + encodeURIComponent(_currentNode);
+}
+
+const _origFetch = window.fetch.bind(window);
+window.fetch = (input, init) => {
+  if (typeof input === 'string') return _origFetch(withNode(input), init);
+  return _origFetch(input, init);
+};
 
 function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -243,6 +261,7 @@ function attachImageZoomAndTapClose(img) {
 }
 
 function openImage(url, label) {
+  url = withNode(url);
   modalTitle.textContent = label || 'Image Preview';
   modalRawLink.style.display = 'inline-block';
   modalRawLink.href = url;
@@ -287,8 +306,16 @@ function render() {
   sessionStats.innerHTML =
     `<span>TPS: <b>${esc(st.tps || '-')}</b></span>` +
     `<span>5h: <b>${esc(st.h5 || '-')}</b></span>` +
-    `<span>Weekly: <b>${esc(st.weekly || '-')}</b></span>` +
+    `<span>Weekly: <b>${esc(st.weekly || '-')}</b> <a href="#" id="refreshQuotaBtn" title="刷新额度" style="color:#38bdf8;text-decoration:none;margin-left:2px;">↻</a></span>` +
     `<span>Token: <b>${esc(tokText)}</b></span>`;
+  const rqBtn = document.getElementById('refreshQuotaBtn');
+  if (rqBtn) {
+    rqBtn.onclick = async (e) => {
+      e.preventDefault();
+      rqBtn.textContent = '…';
+      await fetch('/api/refresh-quota', { method: 'POST' }).catch(() => {});
+    };
+  }
 
   const sLabel = state.session_name ? ` · ${state.session_name}` : (state.conversation_id ? '' : ' · New');
   const qInfo = state.queued_count ? ` (Q:${state.queued_count})` : '';
@@ -297,14 +324,34 @@ function render() {
 
   const atBottom = chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight < 80;
   chatEl.innerHTML = '';
-  const allMsgs = state.messages || [];
+  const rawMsgs = state.messages || [];
+  const totalMsgs = state.total_messages || rawMsgs.length;
+  let allMsgs = rawMsgs;
+  if (window._showAllMsgs && _fullMsgsCache && _fullMsgsCache.cid === state.conversation_id && totalMsgs > rawMsgs.length) {
+    const prefixCount = Math.max(0, totalMsgs - rawMsgs.length);
+    allMsgs = _fullMsgsCache.messages.slice(0, prefixCount).concat(rawMsgs);
+  }
   const visibleMsgs = (!window._showAllMsgs && allMsgs.length > 60) ? allMsgs.slice(-60) : allMsgs;
-  if (!window._showAllMsgs && allMsgs.length > 60) {
+  if (totalMsgs > visibleMsgs.length) {
     const olderBtn = document.createElement('button');
     olderBtn.type = 'button';
-    olderBtn.textContent = `Show all ${allMsgs.length} messages (showing latest 60)`;
+    olderBtn.textContent = `Show all ${totalMsgs} messages (showing latest ${visibleMsgs.length})`;
     olderBtn.style.alignSelf = 'center';
-    olderBtn.onclick = () => { window._showAllMsgs = true; render(); };
+    olderBtn.onclick = async () => {
+      olderBtn.disabled = true;
+      olderBtn.textContent = 'Loading all messages...';
+      try {
+        const res = await fetch('/api/state?all=1');
+        if (res.ok) {
+          const fullState = await res.json();
+          _fullMsgsCache = { cid: fullState.conversation_id, messages: fullState.messages || [] };
+          state = fullState;
+          window._showAllMsgs = true;
+        }
+      } finally {
+        render();
+      }
+    };
     chatEl.appendChild(olderBtn);
   }
   for (let i = 0; i < visibleMsgs.length; i++) {
@@ -337,7 +384,7 @@ function render() {
       html += '<div class="images-grid">';
       for (const img of m.images) {
         const fullUrl = `/api/file?path=${encodeURIComponent(img.path)}`;
-        const thumbUrl = `${fullUrl}&thumb=1`;
+        const thumbUrl = withNode(`${fullUrl}&thumb=1`);
         html += `<div class="img-card" data-url="${esc(fullUrl)}" data-name="${esc(img.name)}">
           <img src="${esc(thumbUrl)}" loading="lazy" alt="${esc(img.name)}" />
           <div class="cap">${esc(img.name)}</div>
@@ -380,6 +427,10 @@ function render() {
 
 async function fetchState() {
   const res = await fetch('/api/state');
+  if (res.status === 401) {
+    location.replace('/login');
+    return;
+  }
   state = await res.json();
   render();
 }
@@ -448,18 +499,27 @@ function renderSessionPickerList() {
   modalBody.querySelectorAll('[data-cid]').forEach(row => {
     row.onclick = async () => {
       const cid = row.dataset.cid;
-      if (!cid) return;
-      const res = await fetch('/api/load-conversation', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ conversation_id: cid })
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        alert(data.error || 'Failed to load session');
-        return;
+      if (!cid || _switchingSession) return;
+      _switchingSession = true;
+      modalTitle.textContent = 'Switching session...';
+      row.style.opacity = '0.6';
+      window._showAllMsgs = false;
+      _fullMsgsCache = null;
+      try {
+        const res = await fetch('/api/load-conversation', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversation_id: cid })
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          alert(data.error || 'Failed to load session');
+          return;
+        }
+        closeModal();
+      } finally {
+        _switchingSession = false;
       }
-      closeModal();
     };
   });
   modalBody.querySelectorAll('[data-del-cid]').forEach(btn => {
@@ -505,9 +565,9 @@ function shortModelName(label, id) {
   return (base.toLowerCase() + tier).slice(0, 16);
 }
 
-async function loadModels() {
+async function loadModels(forceRefresh = false) {
   try {
-    const res = await fetch('/api/models');
+    const res = await fetch(forceRefresh ? '/api/models?refresh=1' : '/api/models');
     const data = await res.json();
     if (!data.models) return;
     const cur = state.model || modelSelect.value || '';
@@ -533,6 +593,10 @@ async function loadModels() {
       opt.textContent = shortModelName(found ? found.label : cur, cur);
       modelSelect.appendChild(opt);
     }
+    const refOpt = document.createElement('option');
+    refOpt.value = '__refresh__';
+    refOpt.textContent = '↻ Refresh models';
+    modelSelect.appendChild(refOpt);
     modelSelect.value = cur;
   } catch (e) {}
 }
@@ -557,6 +621,11 @@ renameBtn.onclick = async () => {
 };
 
 modelSelect.onchange = async () => {
+  if (modelSelect.value === '__refresh__') {
+    modelSelect.value = state.model || '';
+    await loadModels(true);
+    return;
+  }
   await fetch('/api/settings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -684,7 +753,7 @@ async function openGallery(silent) {
   } else {
     const cards = data.images.map(img => {
       const fullUrl = `/api/file?path=${encodeURIComponent(img.path)}&v=${Math.floor(img.mtime || 0)}`;
-      const thumbUrl = `${fullUrl}&thumb=1`;
+      const thumbUrl = withNode(`${fullUrl}&thumb=1`);
       return `<div class="img-card" data-url="${esc(fullUrl)}" data-name="${esc(img.name)}">
         <img src="${esc(thumbUrl)}" loading="lazy" alt="${esc(img.name)}" />
         <div class="cap" title="${esc(img.rel)}">${esc(img.rel)}</div>
@@ -813,8 +882,55 @@ setInterval(() => {
   else if (_modalView === 'sessions') openSessionPicker(true);
 }, 4000);
 
+async function loadNodes() {
+  try {
+    const res = await fetch('/api/nodes');
+    if (!res.ok) return;
+    const data = await res.json();
+    const nodes = data.nodes || [];
+    if (nodes.length <= 1) {
+      nodeSelect.style.display = 'none';
+      _currentNode = nodes.length ? nodes[0].id : 'local';
+      return;
+    }
+    nodeSelect.innerHTML = '';
+    for (const n of nodes) {
+      const opt = document.createElement('option');
+      opt.value = n.id;
+      opt.textContent = n.name;
+      nodeSelect.appendChild(opt);
+    }
+    if (!nodes.some(n => n.id === _currentNode)) {
+      _currentNode = nodes[0].id;
+    }
+    nodeSelect.value = _currentNode;
+    nodeSelect.style.display = 'inline-block';
+  } catch (e) {}
+}
+
+nodeSelect.onchange = () => {
+  _currentNode = nodeSelect.value || 'local';
+  localStorage.setItem('agy_node', _currentNode);
+  window._showAllMsgs = false;
+  _fullMsgsCache = null;
+  _conversations = [];
+  connectSSE();
+  fetchState();
+  loadConversations(true);
+  loadModels();
+};
+
 function connectSSE() {
-  const es = new EventSource('/api/events');
+  if (_sseTimer) {
+    clearTimeout(_sseTimer);
+    _sseTimer = null;
+  }
+  if (_sse) {
+    try { _sse.close(); } catch (e) {}
+    _sse = null;
+  }
+  const es = new EventSource(withNode('/api/events'));
+  _sse = es;
   es.onmessage = (ev) => {
     try {
       const payload = JSON.parse(ev.data);
@@ -826,7 +942,10 @@ function connectSSE() {
   };
   es.onerror = () => {
     es.close();
-    setTimeout(connectSSE, 2000);
+    if (_sse === es) {
+      _sse = null;
+      _sseTimer = setTimeout(connectSSE, 2000);
+    }
   };
 }
 
@@ -834,8 +953,10 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden) fetchState();
 });
 
-fetchState().then(() => {
-  connectSSE();
-  loadConversations(true);
-  loadModels();
+loadNodes().then(() => {
+  fetchState().then(() => {
+    connectSSE();
+    loadConversations(true);
+    loadModels();
+  });
 });
