@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="AGY Console" />
+  <meta name="theme-color" content="#0f172a" />
+  <link rel="manifest" href="/manifest.json" />
+  <title>AGY Console</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<div class="app">
+  <section id="consolePane" class="console-pane">
+    <div class="header-row">
+      <div class="title-wrap">
+        <span id="statusDot" class="dot"></span>
+        <span class="title">AGY Console</span>
+        <span id="subInfo" class="status-tag">Idle · New</span>
+      </div>
+      <div style="display:flex; gap:5px; flex-shrink:0;">
+        <button id="newChatBtn" type="button">New</button>
+        <button id="toggleConsoleBtn" type="button">Hide</button>
+      </div>
+    </div>
+
+    <div class="console-body">
+      <div class="ctrl-row">
+        <button id="sessionPickerBtn" type="button" class="session-picker-btn" style="flex:1.8; min-width:0;" title="Existing Conversations"><span id="sessionPickerLabel" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">-- Session --</span><span style="opacity:0.7; flex-shrink:0;">▾</span></button>
+        <select id="modelSelect" style="flex:0 0 72px; max-width:72px;" title="Model">
+          <option value="">Default</option>
+        </select>
+        <select id="modeSelect" style="flex:0 0 72px; max-width:72px;" title="Execution Mode">
+          <option value="auto">auto</option>
+          <option value="accept-edits">accept-edits</option>
+          <option value="plan">plan</option>
+        </select>
+      </div>
+      <div class="cmd-bar">
+        <button class="chip" type="button" id="filesBtn">Files</button>
+        <button class="chip" type="button" id="galleryBtn">Images</button>
+        <button class="chip" type="button" id="renameBtn">Rename</button>
+      </div>
+      <div id="sessionStats" class="stats-bar">
+        <span>TPS: <b>-</b></span>
+        <span>5h: <b>-</b></span>
+        <span>Weekly: <b>-</b></span>
+        <span>Token: <b>-</b></span>
+      </div>
+    </div>
+  </section>
+
+  <main id="chat"></main>
+
+  <footer>
+    <textarea id="promptInput" rows="1" placeholder="Message or dictate..."></textarea>
+    <button id="nowBtn" type="button" style="display:none; height:42px; padding:0 12px; background:#d97706; border-color:#d97706; font-weight:600; font-size:13px;">Now</button>
+    <button id="sendBtn" class="primary" type="button">Send</button>
+  </footer>
+</div>
+
+<div id="imgModal" class="modal">
+  <div class="modal-bar">
+    <span id="modalTitle" class="name">Image Preview</span>
+    <div style="display:flex; gap:8px;">
+      <a id="modalRawLink" href="#" target="_blank" style="color:#38bdf8; text-decoration:none; padding:6px 8px;">Raw</a>
+      <button id="modalClose" type="button">Close</button>
+    </div>
+  </div>
+  <div id="modalBody" class="modal-body"></div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

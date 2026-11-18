@@ -1,0 +1,7 @@
+{
+  "cwd": "/path/to/your/workspace",
+  "agy_bin": "~/.local/bin/agy",
+  "host": "0.0.0.0",
+  "port": 8088,
+  "mode": "auto"
+}
