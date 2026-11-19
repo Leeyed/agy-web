@@ -33,13 +33,20 @@ from .transcript import _save_session_name, list_existing_conversations
 
 
 FALLBACK_MODELS = [
+    {"id": "gemini-4-neon-medium", "label": "Gemini 4 Neon (Medium)"},
+    {"id": "gemini-4-neon-high", "label": "Gemini 4 Neon (High)"},
+    {"id": "gemini-4-neon-xhigh", "label": "Gemini 4 Neon (XHigh)"},
+    {"id": "gemini-4-neon-low", "label": "Gemini 4 Neon (Low)"},
+    {"id": "gemini-4-argon-medium", "label": "Gemini 4 Argon (Medium)"},
+    {"id": "gemini-4-argon-high", "label": "Gemini 4 Argon (High)"},
+    {"id": "gemini-4-argon-low", "label": "Gemini 4 Argon (Low)"},
     {"id": "gemini-4-hydrogen-medium", "label": "Gemini 4 Hydrogen (Medium)"},
     {"id": "gemini-4-hydrogen-high", "label": "Gemini 4 Hydrogen (High)"},
-    {"id": "gemini-4-carbon-medium", "label": "Gemini 4 Carbon (Medium)"},
-    {"id": "gemini-4-carbon-high", "label": "Gemini 4 Carbon (High)"},
+    {"id": "gemini-4-hydrogen-xhigh", "label": "Gemini 4 Hydrogen (XHigh)"},
+    {"id": "gemini-4-hydrogen-low", "label": "Gemini 4 Hydrogen (Low)"},
     {"id": "gemini-3.8-flash-medium", "label": "Gemini 3.8 Flash (Medium)"},
     {"id": "gemini-3.8-flash-high", "label": "Gemini 3.8 Flash (High)"},
-    {"id": "gemini-3.7-flash-medium", "label": "Gemini 3.7 Flash (Medium)"},
+    {"id": "gemini-3.8-flash-low", "label": "Gemini 3.8 Flash (Low)"},
 ]
 
 

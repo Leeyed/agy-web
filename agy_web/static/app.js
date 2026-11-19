@@ -579,14 +579,14 @@ sessionPickerBtn.onclick = () => openSessionPicker(false);
 
 function shortModelName(label, id) {
   const s = (label || id || '').trim();
-  const tierMap = { Low: 'L', Medium: 'M', High: 'H', Max: 'X' };
+  const tierMap = { low: 'L', medium: 'M', high: 'H', xhigh: 'XH', max: 'X' };
   let tier = '';
-  const tm = s.match(/\((Low|Medium|High|Max)\)/i);
-  if (tm) tier = '-' + (tierMap[tm[1][0].toUpperCase() + tm[1].slice(1).toLowerCase()] || tm[1][0]);
+  const tm = s.match(/\((Low|Medium|High|XHigh|Max)\)/i);
+  if (tm) tier = '-' + (tierMap[tm[1].toLowerCase()] || tm[1][0].toUpperCase());
   const base = s.replace(/\s*\([^)]*\)\s*/g, '').trim();
-  if (/^Gemini\s+\S+\s+(Carbon|Hydrogen|Argon)$/i.test(base)) return RegExp.$1.toLowerCase() + tier;
   if (/^Gemini\s+(\S+)\s+Flash$/i.test(base)) return RegExp.$1.toLowerCase() + 'flash' + tier;
   if (/^Gemini\s+(\S+)\s+Pro$/i.test(base)) return RegExp.$1.toLowerCase() + 'pro' + tier;
+  if (/^Gemini\s+\S+\s+([A-Za-z]+)$/i.test(base)) return RegExp.$1.toLowerCase() + tier;
   if (/^Claude\s+(Opus|Sonnet)\s+(\S+)$/i.test(base)) return RegExp.$1.toLowerCase() + ' ' + RegExp.$2 + tier;
   if (/^Orchestrator$/i.test(base)) return 'orchestrator';
   return (base.toLowerCase() + tier).slice(0, 16);
@@ -598,7 +598,7 @@ async function loadModels(forceRefresh = false) {
     const data = await res.json();
     if (!data.models) return;
     const cur = state.model || modelSelect.value || '';
-    const filtered = data.models.filter(m => /^gemini-(4-|3\.8-)/i.test(m.id));
+    const filtered = data.models.filter(m => /^gemini-(4|5|3\.8)/i.test(m.id));
     let defText = 'Default';
     if (data.default) {
       const defMatch = data.models.find(m => m.id === data.default || (m.label && m.label.toLowerCase() === data.default.toLowerCase()));
