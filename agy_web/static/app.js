@@ -58,7 +58,7 @@ function renderInlineMd(text) {
     if (url.startsWith('file://')) {
       const p = url.slice(7).split('#')[0];
       if (/\.(png|jpg|jpeg|webp|gif|svg)$/i.test(p)) {
-        return `<a href="#" onclick="openImage('/api/file?path=${encodeURIComponent(p)}','${esc(label)}');return false;">${label}</a>`;
+        return `<a href="#" onclick="openImage(withNode('/api/file?path=${encodeURIComponent(p)}'),'${esc(label)}');return false;">${label}</a>`;
       }
       return `<span>${label}</span>`;
     }
@@ -772,22 +772,22 @@ async function openGallery(silent) {
   modalBody.classList.add('gallery-mode');
   modalRawLink.style.display = 'none';
   if (!silent) {
-    modalTitle.textContent = 'Images';
+    modalTitle.innerHTML = 'Images <span style="font-size:12px;opacity:0.7;cursor:pointer;margin-left:6px;" onclick="openGallery(true)">🔄</span>';
     modalBody.innerHTML = '<div style="color:#9ca3af">Loading...</div>';
     imgModal.classList.add('open');
   }
-  const res = await fetch('/api/recent-images');
+  const res = await fetch(withNode('/api/recent-images?t=' + Date.now()));
   const data = await res.json().catch(() => ({}));
   if (_modalView !== 'gallery') return;
   if (!res.ok || !Array.isArray(data.images)) {
-    modalTitle.textContent = 'Recent Images';
+    modalTitle.innerHTML = 'Recent Images <span style="font-size:12px;opacity:0.7;cursor:pointer;margin-left:6px;" onclick="openGallery(true)">🔄</span>';
     modalBody.innerHTML = `<div style="color:#f87171">${esc(data.error || 'Failed to load images')}</div>`;
     imgModal.classList.add('open');
     return;
   }
-  modalTitle.textContent = `Recent Images (${data.images.length})`;
+  modalTitle.innerHTML = `Recent Images (${data.images.length}) <span title="刷新" style="font-size:12px;opacity:0.8;cursor:pointer;margin-left:8px;" onclick="openGallery(true)">🔄</span>`;
   if (!data.images.length) {
-    modalBody.innerHTML = '<div style="color:#9ca3af">No images found</div>';
+    modalBody.innerHTML = '<div style="color:#9ca3af">No images found in recent conversations</div>';
   } else {
     const cards = data.images.map(img => {
       const fullUrl = `/api/file?path=${encodeURIComponent(img.path)}&v=${Math.floor(img.mtime || 0)}`;

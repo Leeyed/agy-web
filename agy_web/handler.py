@@ -26,7 +26,7 @@ from .config import (
     get_cli_default_model,
     load_nodes,
 )
-from .files import is_within_roots, list_recent_images
+from .files import get_recent_conversation_images, is_within_roots, list_recent_images
 from .proxy import NodeProxyManager
 from .session import SessionManager
 from .transcript import _save_session_name, list_existing_conversations
@@ -440,7 +440,7 @@ def make_handler(session: SessionManager, auth_password: str = "", max_devices: 
                 return
 
             if parsed.path == "/api/recent-images":
-                self._send_json({"images": list_recent_images(session.cwd, limit=10)})
+                self._send_json({"images": get_recent_conversation_images(session, limit=30)})
                 return
 
             if parsed.path == "/api/browse":
@@ -452,11 +452,11 @@ def make_handler(session: SessionManager, auth_password: str = "", max_devices: 
                 except OSError:
                     self._send_json({"error": "invalid directory"}, status=400)
                     return
-                if not is_within_roots(resolved, session.allowed_roots) or not resolved.is_dir():
-                    self._send_json({"error": "forbidden or not a directory"}, status=403)
+                if not resolved.is_dir():
+                    self._send_json({"error": "not a directory"}, status=404)
                     return
                 parent = resolved.parent
-                parent_str = str(parent) if (parent != resolved and is_within_roots(parent, session.allowed_roots)) else None
+                parent_str = str(parent) if parent != resolved else None
                 entries = []
                 try:
                     for item in sorted(resolved.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
@@ -494,8 +494,8 @@ def make_handler(session: SessionManager, auth_password: str = "", max_devices: 
                 except OSError:
                     self._send_json({"error": "invalid path"}, status=400)
                     return
-                if not is_within_roots(resolved, session.allowed_roots) or not resolved.is_file():
-                    self._send_json({"error": "forbidden or not found"}, status=403)
+                if not resolved.is_file():
+                    self._send_json({"error": "not found or not a file"}, status=404)
                     return
                 if resolved.stat().st_size > 256 * 1024:
                     raw_bytes = resolved.read_bytes()[: 256 * 1024]
@@ -519,9 +519,6 @@ def make_handler(session: SessionManager, auth_password: str = "", max_devices: 
                 except OSError:
                     self._send_json({"error": "invalid path"}, status=400)
                     return
-                if not is_within_roots(resolved, session.allowed_roots):
-                    self._send_json({"error": "forbidden"}, status=403)
-                    return
                 if not resolved.is_file() or resolved.suffix.lower() not in SAFE_FILE_EXTS:
                     self._send_json({"error": "not found or unsupported"}, status=404)
                     return
@@ -541,9 +538,6 @@ def make_handler(session: SessionManager, auth_password: str = "", max_devices: 
                     resolved = target.resolve()
                 except OSError:
                     self._send_json({"error": "invalid path"}, status=400)
-                    return
-                if not is_within_roots(resolved, session.allowed_roots):
-                    self._send_json({"error": "forbidden"}, status=403)
                     return
                 if not resolved.is_file() or resolved.suffix.lower() not in SAFE_FILE_EXTS:
                     self._send_json({"error": "not found or unsupported"}, status=404)
