@@ -55,7 +55,10 @@
 
   <main id="chat"></main>
 
+  <div id="attachedImgs" class="attached-imgs" style="display:none;"></div>
   <footer>
+    <input type="file" id="imageUploadInput" accept="image/*" style="display:none;" />
+    <button id="uploadImgBtn" type="button" class="chip icon-btn" title="上传图片" style="height:42px; width:42px; min-width:42px; padding:0; font-size:18px; display:flex; align-items:center; justify-content:center;">📷</button>
     <textarea id="promptInput" rows="1" placeholder="Message or dictate..."></textarea>
     <button id="nowBtn" type="button" style="display:none; height:42px; padding:0 12px; background:#d97706; border-color:#d97706; font-weight:600; font-size:13px;">Now</button>
     <button id="sendBtn" class="primary" type="button">Send</button>
@@ -66,12 +69,15 @@
   <div class="modal-bar">
     <span id="modalTitle" class="name">Image Preview</span>
     <div style="display:flex; gap:8px;">
-      <button id="modalOrigBtn" type="button" style="display:none; background:#2563eb; border-color:#2563eb; color:#fff;">原图</button>
       <a id="modalRawLink" href="#" target="_blank" style="color:#38bdf8; text-decoration:none; padding:6px 8px;">Raw</a>
       <button id="modalClose" type="button">Close</button>
     </div>
   </div>
   <div id="modalBody" class="modal-body"></div>
+  <div id="modalFabBar" class="modal-fab-bar" style="display:none;">
+    <button id="modalOrigBtn" type="button" class="fab-btn orig-btn">原图</button>
+    <button id="modalSaveBtn" type="button" class="fab-btn save-btn">保存到相册</button>
+  </div>
 </div>
 
 <script src="/static/app.js"></script>

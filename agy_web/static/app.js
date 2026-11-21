@@ -18,10 +18,15 @@ const modeSelect = document.getElementById('modeSelect');
 const sessionStats = document.getElementById('sessionStats');
 const imgModal = document.getElementById('imgModal');
 const modalTitle = document.getElementById('modalTitle');
+const modalFabBar = document.getElementById('modalFabBar');
 const modalOrigBtn = document.getElementById('modalOrigBtn');
+const modalSaveBtn = document.getElementById('modalSaveBtn');
 const modalRawLink = document.getElementById('modalRawLink');
 const modalBody = document.getElementById('modalBody');
 const modalClose = document.getElementById('modalClose');
+const uploadImgBtn = document.getElementById('uploadImgBtn');
+const imageUploadInput = document.getElementById('imageUploadInput');
+const attachedImgs = document.getElementById('attachedImgs');
 
 let state = { busy: false, conversation_id: null, cwd: '', mode: 'auto', model: '', messages: [], total_messages: 0 };
 let _fullMsgsCache = null;
@@ -29,6 +34,27 @@ let _switchingSession = false;
 let _currentNode = localStorage.getItem('agy_node') || 'local';
 let _sse = null;
 let _sseTimer = null;
+let _currentDisplayUrl = '';
+let _currentFullUrl = '';
+let _currentLabel = '';
+let _currentBlob = null;
+let _pendingUploads = [];
+
+let _toastEl = null;
+let _toastTimer = null;
+function showToast(text, duration = 2500) {
+  if (!_toastEl) {
+    _toastEl = document.createElement('div');
+    _toastEl.className = 'toast-tip';
+    document.body.appendChild(_toastEl);
+  }
+  _toastEl.textContent = text;
+  _toastEl.classList.add('show');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => {
+    _toastEl.classList.remove('show');
+  }, duration);
+}
 
 function withNode(url) {
   if (!_currentNode || _currentNode === 'local') return url;
@@ -54,13 +80,39 @@ function renderInlineMd(text) {
     codes.push(`<code>${code}</code>`);
     return `\x00C${idx}\x00`;
   });
+  s = s.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+|file:\/\/[^\s)]+)\)/g, (_, label, url) => {
+    let p = url;
+    let full = url;
+    let thumb = url;
+    if (url.startsWith('file://')) {
+      p = url.slice(7).split('#')[0];
+      full = withNode(`/api/file?path=${encodeURIComponent(p)}`);
+      thumb = withNode(`/api/file?path=${encodeURIComponent(p)}&thumb=1`);
+    }
+    const name = label || (p.split('/').pop() || 'image');
+    return `<div class="inline-img-preview" data-url="${esc(full)}" data-name="${esc(name)}">
+      <img src="${esc(thumb)}" loading="lazy" alt="${esc(name)}" />
+      <div class="inline-img-cap">🖼️ ${esc(name)}</div>
+    </div>`;
+  });
   s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|file:\/\/[^\s)]+)\)/g, (_, label, url) => {
     if (url.startsWith('file://')) {
       const p = url.slice(7).split('#')[0];
       if (/\.(png|jpg|jpeg|webp|gif|svg)$/i.test(p)) {
-        return `<a href="#" onclick="openImage(withNode('/api/file?path=${encodeURIComponent(p)}'),'${esc(label)}');return false;">${label}</a>`;
+        const full = withNode(`/api/file?path=${encodeURIComponent(p)}`);
+        const thumb = withNode(`/api/file?path=${encodeURIComponent(p)}&thumb=1`);
+        return `<div class="inline-img-preview" data-url="${esc(full)}" data-name="${esc(label)}">
+          <img src="${esc(thumb)}" loading="lazy" alt="${esc(label)}" />
+          <div class="inline-img-cap">🖼️ ${esc(label)}</div>
+        </div>`;
       }
       return `<span>${label}</span>`;
+    }
+    if (/\.(png|jpg|jpeg|webp|gif|svg)(\?.*)?$/i.test(url)) {
+      return `<div class="inline-img-preview" data-url="${esc(url)}" data-name="${esc(label)}">
+        <img src="${esc(url)}" loading="lazy" alt="${esc(label)}" />
+        <div class="inline-img-cap">🖼️ ${esc(label)}</div>
+      </div>`;
     }
     return `<a href="${url}" target="_blank" rel="noopener">${label}</a>`;
   });
@@ -175,10 +227,11 @@ function applyZoomTransform(img) {
 
 function closeModal() {
   _modalView = null;
-  modalOrigBtn.style.display = 'none';
+  if (modalFabBar) modalFabBar.style.display = 'none';
   imgModal.classList.remove('open');
   modalBody.classList.remove('gallery-mode');
   zoomState = { scale: 1, tx: 0, ty: 0 };
+  _currentBlob = null;
 }
 
 function attachImageZoomAndTapClose(img) {
@@ -192,6 +245,7 @@ function attachImageZoomAndTapClose(img) {
   const dist = (t1, t2) => Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
 
   modalBody.ontouchstart = (e) => {
+    if (e.target.closest('#modalFabBar')) return;
     if (e.touches.length === 2) {
       e.preventDefault();
       mode = 'pinch';
@@ -209,6 +263,7 @@ function attachImageZoomAndTapClose(img) {
   };
 
   modalBody.ontouchmove = (e) => {
+    if (e.target.closest('#modalFabBar')) return;
     if (mode === 'pinch' && e.touches.length === 2) {
       e.preventDefault();
       const d = dist(e.touches[0], e.touches[1]);
@@ -229,6 +284,7 @@ function attachImageZoomAndTapClose(img) {
   };
 
   modalBody.ontouchend = (e) => {
+    if (e.target.closest('#modalFabBar')) return;
     if (e.touches.length === 0 && !moved) {
       const now = Date.now();
       if (now - lastTap < 260) {
@@ -257,6 +313,7 @@ function attachImageZoomAndTapClose(img) {
     applyZoomTransform(img);
   };
   modalBody.onclick = (e) => {
+    if (e.target.closest('#modalFabBar')) return;
     if ('ontouchstart' in window && navigator.maxTouchPoints > 0) return;
     closeModal();
   };
@@ -265,12 +322,21 @@ function attachImageZoomAndTapClose(img) {
 async function openImage(url, label) {
   const baseUrl = url.replace(/[&?](thumb|preview)=1/g, '');
   const fullUrl = withNode(baseUrl);
+  _currentFullUrl = fullUrl;
+  _currentLabel = label || 'Image';
+  _currentBlob = null;
+
   modalTitle.textContent = label || 'Image Preview';
-  modalOrigBtn.style.display = 'none';
-  modalOrigBtn.onclick = null;
   modalRawLink.style.display = 'inline-block';
   modalRawLink.href = fullUrl;
   modalBody.classList.remove('gallery-mode');
+  if (modalFabBar) modalFabBar.style.display = 'flex';
+
+  modalOrigBtn.disabled = false;
+  modalOrigBtn.style.display = 'flex';
+  modalOrigBtn.textContent = '原图';
+  modalSaveBtn.disabled = false;
+  modalSaveBtn.textContent = '保存到相册';
   zoomState = { scale: 1, tx: 0, ty: 0 };
 
   let displayUrl = fullUrl;
@@ -280,24 +346,112 @@ async function openImage(url, label) {
       const infoRes = await fetch('/api/file-info?path=' + pm[1]);
       if (infoRes.ok) {
         const info = await infoRes.json();
-        if (info && info.size > 3 * 1024 * 1024) {
-          displayUrl = withNode(baseUrl + (baseUrl.includes('?') ? '&' : '?') + 'preview=1');
+        if (info && info.size) {
           modalOrigBtn.textContent = `原图 (${fmtSize(info.size)})`;
-          modalOrigBtn.style.display = 'inline-block';
-          modalOrigBtn.onclick = () => {
-            const zImg = document.getElementById('zoomImg');
-            if (zImg) zImg.src = fullUrl;
-            modalOrigBtn.style.display = 'none';
-          };
+          if (info.size > 3 * 1024 * 1024) {
+            displayUrl = withNode(baseUrl + (baseUrl.includes('?') ? '&' : '?') + 'preview=1');
+          }
         }
       }
     } catch (e) {}
   }
+  _currentDisplayUrl = displayUrl;
 
   modalBody.innerHTML = `<img id="zoomImg" src="${displayUrl}" alt="${esc(label)}" />`;
   const img = document.getElementById('zoomImg');
   attachImageZoomAndTapClose(img);
   imgModal.classList.add('open');
+
+  // 原图进度下载并原地刷新
+  modalOrigBtn.onclick = (e) => {
+    e.stopPropagation();
+    if (modalOrigBtn.disabled) return;
+    modalOrigBtn.disabled = true;
+    modalOrigBtn.textContent = '0%';
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', fullUrl, true);
+    xhr.responseType = 'blob';
+    xhr.onprogress = (ev) => {
+      if (ev.lengthComputable && ev.total > 0) {
+        const pct = Math.round((ev.loaded / ev.total) * 100);
+        modalOrigBtn.textContent = `${pct}%`;
+      } else {
+        modalOrigBtn.textContent = '下载中...';
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        modalOrigBtn.textContent = '100%';
+        const blob = xhr.response;
+        _currentBlob = blob;
+        const blobUrl = URL.createObjectURL(blob);
+        const zImg = document.getElementById('zoomImg');
+        if (zImg) {
+          zImg.src = blobUrl;
+        }
+        setTimeout(() => {
+          modalOrigBtn.textContent = '已是原图';
+        }, 200);
+      } else {
+        modalOrigBtn.disabled = false;
+        modalOrigBtn.textContent = '重试原图';
+        showToast('原图加载失败');
+      }
+    };
+    xhr.onerror = () => {
+      modalOrigBtn.disabled = false;
+      modalOrigBtn.textContent = '重试原图';
+      showToast('网络异常，原图加载失败');
+    };
+    xhr.send();
+  };
+
+  // 保存到相册
+  modalSaveBtn.onclick = async (e) => {
+    e.stopPropagation();
+    try {
+      modalSaveBtn.disabled = true;
+      modalSaveBtn.textContent = '处理中...';
+      let blob = _currentBlob;
+      if (!blob) {
+        const r = await fetch(_currentDisplayUrl);
+        blob = await r.blob();
+      }
+      const ext = (_currentLabel.split('.').pop() || 'png').toLowerCase();
+      const mime = blob.type || (ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'image/png');
+      const safeName = _currentLabel.includes('.') ? _currentLabel : `${_currentLabel}.${ext}`;
+      const file = new File([blob], safeName, { type: mime });
+
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          files: [file],
+          title: safeName,
+        });
+        modalSaveBtn.textContent = '已保存';
+        setTimeout(() => { modalSaveBtn.textContent = '保存到相册'; modalSaveBtn.disabled = false; }, 2000);
+        return;
+      }
+
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = safeName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+
+      modalSaveBtn.textContent = '已下载';
+      showToast('已保存图片 (长按图片亦可存入相册)');
+      setTimeout(() => { modalSaveBtn.textContent = '保存到相册'; modalSaveBtn.disabled = false; }, 2500);
+    } catch (err) {
+      if (err && err.name !== 'AbortError') {
+        showToast('提示: 可直接长按图片选择“存储图像”');
+      }
+      modalSaveBtn.textContent = '保存到相册';
+      modalSaveBtn.disabled = false;
+    }
+  };
 }
 
 modalClose.onclick = closeModal;
@@ -444,7 +598,7 @@ function render() {
         inputEl.focus();
       };
     }
-    div.querySelectorAll('.img-card').forEach(card => {
+    div.querySelectorAll('.img-card, .inline-img-preview').forEach(card => {
       card.onclick = () => openImage(card.dataset.url, card.dataset.name);
     });
     chatEl.appendChild(div);
@@ -559,6 +713,7 @@ function renderSessionPickerList() {
 
 async function openSessionPicker(silent) {
   _modalView = 'sessions';
+  if (modalFabBar) modalFabBar.style.display = 'none';
   const prevScroll = silent ? modalBody.scrollTop : 0;
   clearModalHandlers();
   modalBody.classList.add('gallery-mode');
@@ -668,9 +823,80 @@ modeSelect.onchange = async () => {
   });
 };
 
+if (uploadImgBtn && imageUploadInput) {
+  uploadImgBtn.onclick = () => {
+    imageUploadInput.value = '';
+    imageUploadInput.click();
+  };
+
+  imageUploadInput.onchange = async () => {
+    const file = imageUploadInput.files && imageUploadInput.files[0];
+    if (!file) return;
+
+    showToast('正在上传图片...');
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const dataUrl = reader.result;
+        const res = await fetch(withNode('/api/upload'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: file.name,
+            data: dataUrl,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          showToast('上传失败: ' + (data.error || '未知错误'));
+          return;
+        }
+        _pendingUploads.push({
+          path: data.path,
+          rel: data.rel,
+          name: data.name,
+          thumbUrl: withNode(`/api/file?path=${encodeURIComponent(data.path)}&thumb=1`),
+        });
+        renderPendingUploads();
+        showToast('图片上传成功');
+      } catch (e) {
+        showToast('上传失败: ' + e.message);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+}
+
+function renderPendingUploads() {
+  if (!attachedImgs) return;
+  if (!_pendingUploads.length) {
+    attachedImgs.style.display = 'none';
+    attachedImgs.innerHTML = '';
+    return;
+  }
+  attachedImgs.style.display = 'flex';
+  attachedImgs.innerHTML = _pendingUploads.map((up, idx) => `
+    <div class="attached-card" title="${esc(up.name)}">
+      <img src="${esc(up.thumbUrl)}" alt="${esc(up.name)}" />
+      <button type="button" class="del-btn" onclick="removePendingUpload(${idx})">✕</button>
+    </div>
+  `).join('');
+}
+
+window.removePendingUpload = (idx) => {
+  _pendingUploads.splice(idx, 1);
+  renderPendingUploads();
+};
+
 async function sendMessage(immediate = false) {
-  const text = inputEl.value.trim();
-  if (!text) return;
+  let text = inputEl.value.trim();
+  if (!text && !_pendingUploads.length) return;
+  if (_pendingUploads.length) {
+    const imgHints = _pendingUploads.map(up => `[附带图片: ${up.path}]`).join('\n');
+    text = text ? `${imgHints}\n\n${text}` : `${imgHints}\n请查看并分析上述图片。`;
+    _pendingUploads = [];
+    renderPendingUploads();
+  }
   inputEl.value = '';
   inputEl.style.height = '42px';
   const res = await fetch('/api/chat', {
@@ -767,6 +993,7 @@ let _browseDir = '';
 
 async function openGallery(silent) {
   _modalView = 'gallery';
+  if (modalFabBar) modalFabBar.style.display = 'none';
   const prevScroll = silent ? modalBody.scrollTop : 0;
   clearModalHandlers();
   modalBody.classList.add('gallery-mode');
@@ -856,6 +1083,7 @@ async function openTextFile(filePath, fileName, parentDir) {
 
 async function openFileBrowser(dirPath, silent) {
   _modalView = 'files';
+  if (modalFabBar) modalFabBar.style.display = 'none';
   if (dirPath !== undefined) _browseDir = dirPath;
   const prevScroll = silent ? modalBody.scrollTop : 0;
   clearModalHandlers();

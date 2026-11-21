@@ -7,3 +7,5 @@ authorized_devices.json
 last_session*.json
 *.crt
 *.key
+*.log
+uploads/

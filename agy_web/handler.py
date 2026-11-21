@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
 import mimetypes
 import queue
+import re
 import secrets
 import subprocess
 import threading
@@ -717,6 +719,51 @@ def make_handler(session: SessionManager, auth_password: str = "", max_devices: 
                 raw_cwd = str(body.get("cwd") or "").strip()
                 ok, info = session.reset(cwd=raw_cwd or None)
                 self._send_json({"ok": ok, "cwd": info if ok else None, "error": None if ok else info}, status=200 if ok else 400)
+                return
+
+            if parsed.path == "/api/upload":
+                raw_name = str(body.get("name") or "image.png").strip()
+                data_b64 = str(body.get("data") or "").strip()
+                if not data_b64:
+                    self._send_json({"error": "missing image data"}, status=400)
+                    return
+                if "," in data_b64:
+                    data_b64 = data_b64.split(",", 1)[1]
+                try:
+                    img_bytes = base64.b64decode(data_b64)
+                except Exception:
+                    self._send_json({"error": "invalid base64 data"}, status=400)
+                    return
+                if len(img_bytes) > 40 * 1024 * 1024:
+                    self._send_json({"error": "image exceeds 40MB limit"}, status=400)
+                    return
+                clean_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(raw_name).name).strip("._")
+                if not clean_name:
+                    clean_name = "image.png"
+                ext = Path(clean_name).suffix.lower()
+                if ext not in IMAGE_EXTS:
+                    clean_name += ".png"
+                ts = time.strftime("%Y%m%d_%H%M%S")
+                final_name = f"{ts}_{clean_name}"
+                upload_dir = session.cwd / "uploads"
+                try:
+                    upload_dir.mkdir(parents=True, exist_ok=True)
+                    out_path = upload_dir / final_name
+                    out_path.write_bytes(img_bytes)
+                except OSError as exc:
+                    self._send_json({"error": f"failed to save file: {exc}"}, status=500)
+                    return
+                if hasattr(session, "allowed_roots"):
+                    if upload_dir not in session.allowed_roots:
+                        session.allowed_roots.append(upload_dir)
+                resolved_str = str(out_path.resolve())
+                self._send_json({
+                    "ok": True,
+                    "path": resolved_str,
+                    "name": final_name,
+                    "rel": f"uploads/{final_name}",
+                    "size": len(img_bytes),
+                })
                 return
 
             self._send_json({"error": "not found"}, status=404)
