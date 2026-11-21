@@ -39,6 +39,8 @@ let _currentFullUrl = '';
 let _currentLabel = '';
 let _currentBlob = null;
 let _pendingUploads = [];
+let _nodeOffline = false;
+let _nodeErrorMsg = '';
 
 let _toastEl = null;
 let _toastTimer = null;
@@ -462,6 +464,23 @@ toggleConsoleBtn.onclick = () => {
 };
 
 function render() {
+  if (_nodeOffline) {
+    statusDot.className = 'dot offline';
+    sendBtn.disabled = true;
+    sendBtn.textContent = 'Offline';
+    nowBtn.style.display = 'none';
+    sessionPickerLabel.textContent = '-- Offline --';
+    subInfo.textContent = `Offline · ${_nodeErrorMsg || '无法连接'}`;
+    sessionStats.innerHTML = `<span style="color:#f87171;font-weight:500;">⚠️ 节点离线: ${esc(_nodeErrorMsg || '目标服务器连接失败')}</span>`;
+    chatEl.innerHTML = `<div style="padding:40px 16px;text-align:center;color:#94a3b8;">
+      <div style="font-size:36px;margin-bottom:10px;">🔌</div>
+      <div style="font-size:16px;font-weight:600;color:#f87171;margin-bottom:6px;">节点离线 (无法连接)</div>
+      <div style="font-size:13px;color:#64748b;max-width:320px;margin:0 auto 16px;">${esc(_nodeErrorMsg || '目标服务器上的 agy 服务未启动或端口无法访问')}</div>
+      <button class="chip" type="button" onclick="fetchState();connectSSE();">重试连接</button>
+    </div>`;
+    return;
+  }
+
   statusDot.className = 'dot' + (state.busy ? ' busy' : '');
   sendBtn.disabled = false;
   sendBtn.textContent = state.busy ? 'Queue' : 'Send';
@@ -607,13 +626,28 @@ function render() {
 }
 
 async function fetchState() {
-  const res = await fetch('/api/state');
-  if (res.status === 401) {
-    location.replace('/login');
-    return;
+  try {
+    const res = await fetch('/api/state');
+    if (res.status === 401) {
+      location.replace('/login');
+      return;
+    }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || (data && data.error)) {
+      _nodeOffline = true;
+      _nodeErrorMsg = (data && data.error) ? data.error : `HTTP ${res.status}`;
+      render();
+      return;
+    }
+    _nodeOffline = false;
+    _nodeErrorMsg = '';
+    state = data;
+    render();
+  } catch (err) {
+    _nodeOffline = true;
+    _nodeErrorMsg = err.message || '网络连接异常';
+    render();
   }
-  state = await res.json();
-  render();
 }
 
 let _lastConvSync = 0;
@@ -1180,6 +1214,10 @@ nodeSelect.onchange = () => {
   window._showAllMsgs = false;
   _fullMsgsCache = null;
   _conversations = [];
+  _nodeOffline = false;
+  _nodeErrorMsg = '';
+  statusDot.className = 'dot connecting';
+  subInfo.textContent = 'Connecting...';
   connectSSE();
   fetchState();
   loadConversations(true);
@@ -1201,6 +1239,8 @@ function connectSSE() {
     try {
       const payload = JSON.parse(ev.data);
       if (payload.type === 'state') {
+        _nodeOffline = false;
+        _nodeErrorMsg = '';
         state = payload.state;
         render();
       }
@@ -1210,7 +1250,10 @@ function connectSSE() {
     es.close();
     if (_sse === es) {
       _sse = null;
-      _sseTimer = setTimeout(connectSSE, 2000);
+      if (_currentNode !== 'local') {
+        fetchState();
+      }
+      _sseTimer = setTimeout(connectSSE, 2500);
     }
   };
 }
