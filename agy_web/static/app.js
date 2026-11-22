@@ -41,6 +41,45 @@ let _currentBlob = null;
 let _pendingUploads = [];
 let _nodeOffline = false;
 let _nodeErrorMsg = '';
+let _reconnectTimer = null;
+let _reconnectAttempts = 0;
+let _isReconnecting = false;
+
+function scheduleAutoReconnect() {
+  if (_reconnectTimer) return;
+  _reconnectAttempts++;
+  const delay = Math.min(1800 + _reconnectAttempts * 400, 5000);
+  _reconnectTimer = setTimeout(async () => {
+    _reconnectTimer = null;
+    await triggerReconnectNow();
+  }, delay);
+}
+
+async function triggerReconnectNow() {
+  if (_isReconnecting) return;
+  _isReconnecting = true;
+  if (_reconnectTimer) {
+    clearTimeout(_reconnectTimer);
+    _reconnectTimer = null;
+  }
+  try {
+    statusDot.className = 'dot connecting';
+    subInfo.textContent = 'Connecting...';
+    const ok = await fetchState();
+    if (ok) {
+      _reconnectAttempts = 0;
+      connectSSE();
+      loadConversations(true);
+      loadModels();
+    } else {
+      scheduleAutoReconnect();
+    }
+  } catch (e) {
+    scheduleAutoReconnect();
+  } finally {
+    _isReconnecting = false;
+  }
+}
 
 let _toastEl = null;
 let _toastTimer = null;
@@ -471,12 +510,12 @@ function render() {
     nowBtn.style.display = 'none';
     sessionPickerLabel.textContent = '-- Offline --';
     subInfo.textContent = `Offline · ${_nodeErrorMsg || '无法连接'}`;
-    sessionStats.innerHTML = `<span style="color:#f87171;font-weight:500;">⚠️ 节点离线: ${esc(_nodeErrorMsg || '目标服务器连接失败')}</span>`;
+    sessionStats.innerHTML = `<span style="color:#f87171;font-weight:500;">⚠️ 节点断联: ${esc(_nodeErrorMsg || '目标服务器连接失败')}</span> <span style="font-size:11px;color:#94a3b8;margin-left:6px;">(正在自动重试...)</span>`;
     chatEl.innerHTML = `<div style="padding:40px 16px;text-align:center;color:#94a3b8;">
       <div style="font-size:36px;margin-bottom:10px;">🔌</div>
-      <div style="font-size:16px;font-weight:600;color:#f87171;margin-bottom:6px;">节点离线 (无法连接)</div>
-      <div style="font-size:13px;color:#64748b;max-width:320px;margin:0 auto 16px;">${esc(_nodeErrorMsg || '目标服务器上的 agy 服务未启动或端口无法访问')}</div>
-      <button class="chip" type="button" onclick="fetchState();connectSSE();">重试连接</button>
+      <div style="font-size:16px;font-weight:600;color:#f87171;margin-bottom:6px;">节点断联 (正在自动尝试重连)</div>
+      <div style="font-size:13px;color:#64748b;max-width:340px;margin:0 auto 16px;">${esc(_nodeErrorMsg || '目标服务器连接断开，正在后台持续自动尝试重连，服务恢复后将自动刷新进入')}</div>
+      <button class="chip" type="button" onclick="triggerReconnectNow();">立即重连</button>
     </div>`;
     return;
   }
@@ -630,23 +669,39 @@ async function fetchState() {
     const res = await fetch('/api/state');
     if (res.status === 401) {
       location.replace('/login');
-      return;
+      return false;
     }
     const data = await res.json().catch(() => ({}));
     if (!res.ok || (data && data.error)) {
       _nodeOffline = true;
       _nodeErrorMsg = (data && data.error) ? data.error : `HTTP ${res.status}`;
       render();
-      return;
+      scheduleAutoReconnect();
+      return false;
     }
+    const wasOffline = _nodeOffline;
     _nodeOffline = false;
     _nodeErrorMsg = '';
+    _reconnectAttempts = 0;
+    if (_reconnectTimer) {
+      clearTimeout(_reconnectTimer);
+      _reconnectTimer = null;
+    }
     state = data;
     render();
+    if (wasOffline) {
+      connectSSE();
+      loadConversations(true);
+      loadModels();
+      showToast('已恢复连接');
+    }
+    return true;
   } catch (err) {
     _nodeOffline = true;
     _nodeErrorMsg = err.message || '网络连接异常';
     render();
+    scheduleAutoReconnect();
+    return false;
   }
 }
 
@@ -1216,6 +1271,11 @@ nodeSelect.onchange = () => {
   _conversations = [];
   _nodeOffline = false;
   _nodeErrorMsg = '';
+  _reconnectAttempts = 0;
+  if (_reconnectTimer) {
+    clearTimeout(_reconnectTimer);
+    _reconnectTimer = null;
+  }
   statusDot.className = 'dot connecting';
   subInfo.textContent = 'Connecting...';
   connectSSE();
@@ -1239,10 +1299,21 @@ function connectSSE() {
     try {
       const payload = JSON.parse(ev.data);
       if (payload.type === 'state') {
+        const wasOffline = _nodeOffline;
         _nodeOffline = false;
         _nodeErrorMsg = '';
+        _reconnectAttempts = 0;
+        if (_reconnectTimer) {
+          clearTimeout(_reconnectTimer);
+          _reconnectTimer = null;
+        }
         state = payload.state;
         render();
+        if (wasOffline) {
+          loadConversations(true);
+          loadModels();
+          showToast('已恢复连接');
+        }
       }
     } catch (e) {}
   };
@@ -1250,16 +1321,32 @@ function connectSSE() {
     es.close();
     if (_sse === es) {
       _sse = null;
-      if (_currentNode !== 'local') {
-        fetchState();
-      }
-      _sseTimer = setTimeout(connectSSE, 2500);
+      statusDot.className = 'dot connecting';
+      subInfo.textContent = 'Connecting...';
+      scheduleAutoReconnect();
     }
   };
 }
 
+window.addEventListener('online', () => {
+  showToast('网络已恢复，正在连接...');
+  triggerReconnectNow();
+});
+
+window.addEventListener('focus', () => {
+  if (_nodeOffline || !_sse) {
+    triggerReconnectNow();
+  }
+});
+
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) fetchState();
+  if (!document.hidden) {
+    if (_nodeOffline || !_sse) {
+      triggerReconnectNow();
+    } else {
+      fetchState();
+    }
+  }
 });
 
 loadNodes().then(() => {
