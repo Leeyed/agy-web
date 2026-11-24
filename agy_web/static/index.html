@@ -68,13 +68,14 @@
 <div id="imgModal" class="modal">
   <div class="modal-bar">
     <span id="modalTitle" class="name">Image Preview</span>
-    <div style="display:flex; gap:8px;">
-      <a id="modalRawLink" href="#" target="_blank" style="color:#38bdf8; text-decoration:none; padding:6px 8px;">Raw</a>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <a id="modalRawLink" href="#" target="_blank" style="color:#38bdf8; text-decoration:none; padding:6px 8px; font-size:12px;">新标签 ↗</a>
       <button id="modalClose" type="button">Close</button>
     </div>
   </div>
   <div id="modalBody" class="modal-body"></div>
   <div id="modalFabBar" class="modal-fab-bar" style="display:none;">
+    <button id="modal1to1Btn" type="button" class="fab-btn zoom-btn">1:1 原图</button>
     <button id="modalOrigBtn" type="button" class="fab-btn orig-btn">原图</button>
     <button id="modalSaveBtn" type="button" class="fab-btn save-btn">保存到相册</button>
   </div>

@@ -20,6 +20,7 @@ const imgModal = document.getElementById('imgModal');
 const modalTitle = document.getElementById('modalTitle');
 const modalFabBar = document.getElementById('modalFabBar');
 const modalOrigBtn = document.getElementById('modalOrigBtn');
+const modal1to1Btn = document.getElementById('modal1to1Btn');
 const modalSaveBtn = document.getElementById('modalSaveBtn');
 const modalRawLink = document.getElementById('modalRawLink');
 const modalBody = document.getElementById('modalBody');
@@ -284,11 +285,84 @@ document.addEventListener('gesturestart', (e) => {
 }, { passive: false });
 
 let zoomState = { scale: 1, tx: 0, ty: 0 };
+let committedScale = 1;
+
+function update1to1Btn(isZoomed) {
+  if (!modal1to1Btn) return;
+  if (isZoomed) {
+    modal1to1Btn.textContent = '适合屏幕';
+    modal1to1Btn.title = '还原为适合屏幕大小';
+  } else {
+    modal1to1Btn.textContent = '1:1 原图';
+    modal1to1Btn.title = '放大至 1:1 原始像素';
+  }
+}
+
+function getBaseDimensions(img) {
+  const containerW = modalBody.clientWidth || window.innerWidth || 390;
+  const containerH = modalBody.clientHeight || (window.innerHeight - 80) || 600;
+  const nw = (img && img.naturalWidth) || containerW;
+  const nh = (img && img.naturalHeight) || containerH;
+  const fitRatio = Math.min(containerW / nw, containerH / nh, 1);
+  const baseW = Math.max(10, Math.round(nw * fitRatio));
+  const baseH = Math.max(10, Math.round(nh * fitRatio));
+  return { baseW, baseH, nw, nh, containerW, containerH };
+}
+
+function commitZoomLayout(img) {
+  const el = img || document.getElementById('zoomImg');
+  if (!el) return;
+
+  if (zoomState.scale <= 1.02) {
+    zoomState.scale = 1;
+    zoomState.tx = 0;
+    zoomState.ty = 0;
+    committedScale = 1;
+    el.style.maxWidth = '100%';
+    el.style.maxHeight = '100%';
+    el.style.width = '';
+    el.style.height = '';
+    el.style.transform = 'translate3d(0px, 0px, 0px)';
+    update1to1Btn(false);
+    return;
+  }
+
+  const { baseW, baseH, nw, containerW, containerH } = getBaseDimensions(el);
+  const targetW = Math.round(baseW * zoomState.scale);
+  const maxW = Math.min(Math.max(nw, 4096), 6144);
+  const effectiveW = Math.min(targetW, maxW);
+  const layoutScale = effectiveW / baseW;
+  const residualScale = zoomState.scale / layoutScale;
+
+  // Clamp translation so image stays in view
+  const maxTx = Math.max(0, (targetW - containerW) / 2) + 60;
+  const maxTy = Math.max(0, (targetW * (baseH / baseW) - containerH) / 2) + 60;
+  zoomState.tx = Math.max(-maxTx, Math.min(maxTx, zoomState.tx));
+  zoomState.ty = Math.max(-maxTy, Math.min(maxTy, zoomState.ty));
+
+  el.style.maxWidth = 'none';
+  el.style.maxHeight = 'none';
+  el.style.width = effectiveW + 'px';
+  el.style.height = Math.round(baseH * layoutScale) + 'px';
+
+  if (Math.abs(residualScale - 1) < 0.005) {
+    el.style.transform = `translate3d(${zoomState.tx}px, ${zoomState.ty}px, 0px)`;
+  } else {
+    el.style.transform = `translate3d(${zoomState.tx}px, ${zoomState.ty}px, 0px) scale(${residualScale.toFixed(4)})`;
+  }
+
+  committedScale = zoomState.scale;
+  update1to1Btn(true);
+}
 
 function applyZoomTransform(img) {
   const el = img || document.getElementById('zoomImg');
-  if (el) {
-    el.style.transform = `translate(${zoomState.tx}px, ${zoomState.ty}px) scale(${zoomState.scale})`;
+  if (!el) return;
+  const pinchRatio = zoomState.scale / (committedScale || 1);
+  if (Math.abs(pinchRatio - 1) < 0.005) {
+    el.style.transform = `translate3d(${zoomState.tx}px, ${zoomState.ty}px, 0px)`;
+  } else {
+    el.style.transform = `translate3d(${zoomState.tx}px, ${zoomState.ty}px, 0px) scale(${pinchRatio.toFixed(4)})`;
   }
 }
 
@@ -308,6 +382,8 @@ function closeModal() {
   modalBody.classList.remove('gallery-mode');
   modalBody.innerHTML = '';
   zoomState = { scale: 1, tx: 0, ty: 0 };
+  committedScale = 1;
+  update1to1Btn(false);
   _currentBlob = null;
   _currentFileSize = 0;
 }
@@ -345,14 +421,14 @@ function attachImageZoomAndTapClose(img) {
     if (mode === 'pinch' && e.touches.length === 2) {
       e.preventDefault();
       const d = dist(e.touches[0], e.touches[1]);
-      zoomState.scale = Math.min(6, Math.max(1, startScale * (d / startDist)));
-      if (zoomState.scale === 1) { zoomState.tx = 0; zoomState.ty = 0; }
+      zoomState.scale = Math.min(12, Math.max(1, startScale * (d / startDist)));
+      if (zoomState.scale <= 1.02) { zoomState.scale = 1; zoomState.tx = 0; zoomState.ty = 0; }
       applyZoomTransform(img);
     } else if (mode === 'pan' && e.touches.length === 1) {
       const dx = e.touches[0].clientX - startX;
       const dy = e.touches[0].clientY - startY;
       if (Math.hypot(dx, dy) > 8) moved = true;
-      if (zoomState.scale > 1) {
+      if (zoomState.scale > 1.02) {
         e.preventDefault();
         zoomState.tx = startTx + dx;
         zoomState.ty = startTy + dy;
@@ -363,37 +439,51 @@ function attachImageZoomAndTapClose(img) {
 
   modalBody.ontouchend = (e) => {
     if (e.target.closest('#modalFabBar')) return;
-    if (e.touches.length === 0 && !moved) {
-      const now = Date.now();
-      if (now - lastTap < 260) {
-        clearTimeout(tapTimer);
-        lastTap = 0;
-        if (zoomState.scale > 1.1) {
-          zoomState = { scale: 1, tx: 0, ty: 0 };
-        } else {
-          zoomState = { scale: 2.5, tx: 0, ty: 0 };
-        }
-        applyZoomTransform(img);
-      } else {
-        lastTap = now;
-        tapTimer = setTimeout(() => { closeModal(); }, 270);
+    if (e.touches.length === 0) {
+      if (mode === 'pinch' || (mode === 'pan' && moved)) {
+        // Active gesture finished: commit layout to trigger WebKit high-res re-rasterization
+        commitZoomLayout(img);
       }
+      if (!moved) {
+        const now = Date.now();
+        if (now - lastTap < 280) {
+          clearTimeout(tapTimer);
+          lastTap = 0;
+          const { baseW, nw } = getBaseDimensions(img);
+          if (zoomState.scale > 1.1) {
+            zoomState = { scale: 1, tx: 0, ty: 0 };
+            commitZoomLayout(img);
+          } else {
+            const targetScale = Math.max(2.5, Math.min(nw / baseW, 6));
+            zoomState = { scale: targetScale, tx: 0, ty: 0 };
+            commitZoomLayout(img);
+          }
+        } else {
+          lastTap = now;
+          tapTimer = setTimeout(() => {
+            // Only close modal on single tap if not zoomed in
+            if (zoomState.scale <= 1.05) {
+              closeModal();
+            }
+          }, 290);
+        }
+      }
+      mode = null;
     }
-    if (e.touches.length === 0) mode = null;
   };
 
   // Desktop mouse wheel zoom & click-to-close
   modalBody.onwheel = (e) => {
     e.preventDefault();
-    const factor = e.deltaY < 0 ? 1.15 : 0.87;
-    zoomState.scale = Math.min(6, Math.max(1, zoomState.scale * factor));
-    if (zoomState.scale === 1) { zoomState.tx = 0; zoomState.ty = 0; }
-    applyZoomTransform(img);
+    const factor = e.deltaY < 0 ? 1.18 : 0.85;
+    zoomState.scale = Math.min(12, Math.max(1, zoomState.scale * factor));
+    if (zoomState.scale <= 1.02) { zoomState.scale = 1; zoomState.tx = 0; zoomState.ty = 0; }
+    commitZoomLayout(img);
   };
   modalBody.onclick = (e) => {
     if (e.target.closest('#modalFabBar')) return;
     if ('ontouchstart' in window && navigator.maxTouchPoints > 0) return;
-    closeModal();
+    if (zoomState.scale <= 1.05) closeModal();
   };
 }
 
@@ -417,17 +507,21 @@ async function openImage(url, label) {
   modalTitle.textContent = label || 'Image Preview';
   modalRawLink.style.display = 'inline-block';
   modalRawLink.href = fullUrl;
+  modalRawLink.textContent = '新标签 ↗';
   modalBody.classList.remove('gallery-mode');
   if (modalFabBar) modalFabBar.style.display = 'flex';
 
-  modalOrigBtn.disabled = true;
+  zoomState = { scale: 1, tx: 0, ty: 0 };
+  committedScale = 1;
+  update1to1Btn(false);
+
   modalOrigBtn.style.display = 'flex';
-  modalOrigBtn.textContent = '原图';
   modalSaveBtn.disabled = false;
   modalSaveBtn.textContent = '保存到相册';
-  zoomState = { scale: 1, tx: 0, ty: 0 };
 
+  let isLargeImage = false;
   let displayUrl = fullUrl;
+
   const pm = baseUrl.match(/[?&]path=([^&]+)/);
   if (pm) {
     try {
@@ -437,38 +531,76 @@ async function openImage(url, label) {
         if (info && info.size) {
           _currentFileSize = info.size;
           if (info.size > 3 * 1024 * 1024) {
+            isLargeImage = true;
             displayUrl = withNode(baseUrl + (baseUrl.includes('?') ? '&' : '?') + 'preview=1');
-            modalOrigBtn.disabled = false;
-            modalOrigBtn.textContent = `原图 (${fmtSize(info.size)})`;
-          } else {
-            modalOrigBtn.disabled = true;
-            modalOrigBtn.textContent = `已是原图 (${fmtSize(info.size)})`;
           }
         }
       }
     } catch (e) {}
   }
-  if (!_currentFileSize) {
-    modalOrigBtn.disabled = false;
-    modalOrigBtn.textContent = '原图';
-  }
+
   _currentDisplayUrl = displayUrl;
+
+  if (isLargeImage) {
+    modalOrigBtn.disabled = false;
+    modalOrigBtn.textContent = `加载原图 (${fmtSize(_currentFileSize)})`;
+    modalOrigBtn.title = '当前为快速预览图，点击下载高分辨率原图';
+  } else {
+    modalOrigBtn.disabled = true;
+    modalOrigBtn.textContent = _currentFileSize ? `加载中 (${fmtSize(_currentFileSize)})...` : '加载中...';
+  }
 
   modalBody.innerHTML = `<img id="zoomImg" src="${displayUrl}" alt="${esc(label)}" />`;
   const img = document.getElementById('zoomImg');
   attachImageZoomAndTapClose(img);
   imgModal.classList.add('open');
 
-  // 原图进度下载并原地刷新
-  modalOrigBtn.onclick = (e) => {
-    e.stopPropagation();
-    if (modalOrigBtn.disabled) return;
+  img.onload = () => {
+    if (!isLargeImage) {
+      modalOrigBtn.disabled = false;
+      modalOrigBtn.textContent = _currentFileSize ? `原图 (${fmtSize(_currentFileSize)}) ↺` : '原图 ↺';
+      modalOrigBtn.title = '当前为原图，点击可强制重新加载';
+    }
+  };
+
+  img.onerror = () => {
+    modalOrigBtn.disabled = false;
+    modalOrigBtn.textContent = '重试原图';
+  };
+
+  // 1:1 / 适合屏幕 按钮切换
+  if (modal1to1Btn) {
+    modal1to1Btn.onclick = (e) => {
+      e.stopPropagation();
+      const el = document.getElementById('zoomImg');
+      if (!el) return;
+      const { baseW, nw } = getBaseDimensions(el);
+      if (zoomState.scale > 1.1) {
+        zoomState = { scale: 1, tx: 0, ty: 0 };
+        commitZoomLayout(el);
+        showToast('已还原为适合屏幕');
+      } else {
+        const targetScale = Math.max(2.0, (nw / baseW));
+        zoomState = { scale: targetScale, tx: 0, ty: 0 };
+        commitZoomLayout(el);
+        showToast(`已切换至 1:1 原始像素 (${nw}px)`);
+      }
+    };
+  }
+
+  // 原图进度下载并原地无缝刷新
+  const loadOriginalWithProgress = (forceReload = false) => {
+    if (_currentXhr) return;
     modalOrigBtn.disabled = true;
     modalOrigBtn.textContent = '0%';
 
+    const targetUrl = forceReload
+      ? fullUrl + (fullUrl.includes('?') ? '&' : '?') + '_t=' + Date.now()
+      : fullUrl;
+
     const xhr = new XMLHttpRequest();
     _currentXhr = xhr;
-    xhr.open('GET', fullUrl, true);
+    xhr.open('GET', targetUrl, true);
     xhr.responseType = 'blob';
 
     xhr.onprogress = (ev) => {
@@ -490,14 +622,13 @@ async function openImage(url, label) {
         _currentDisplayUrl = fullUrl;
         const blobUrl = URL.createObjectURL(blob);
 
-        // Preload Image to avoid WebKit composited layer freeze bug
         const newImg = new Image();
         newImg.id = 'zoomImg';
         newImg.alt = esc(_currentLabel);
 
         newImg.onload = () => {
           const oldImg = document.getElementById('zoomImg');
-          newImg.style.opacity = '0.7';
+          newImg.style.opacity = '0.5';
           if (oldImg && oldImg.parentNode) {
             oldImg.parentNode.replaceChild(newImg, oldImg);
           } else {
@@ -506,22 +637,24 @@ async function openImage(url, label) {
           }
 
           requestAnimationFrame(() => {
-            newImg.style.transition = 'opacity 0.2s ease';
+            newImg.style.transition = 'opacity 0.25s ease';
             newImg.style.opacity = '1';
-            setTimeout(() => { if (newImg) newImg.style.transition = ''; }, 250);
+            setTimeout(() => { if (newImg) newImg.style.transition = ''; }, 260);
           });
-
-          applyZoomTransform(newImg);
-          attachImageZoomAndTapClose(newImg);
 
           if (_currentBlobUrl) {
             try { URL.revokeObjectURL(_currentBlobUrl); } catch (e) {}
           }
           _currentBlobUrl = blobUrl;
 
-          modalOrigBtn.disabled = true;
-          modalOrigBtn.textContent = `已是原图 (${fmtSize(blob.size)})`;
-          showToast('已切换为原图');
+          isLargeImage = false;
+          modalOrigBtn.disabled = false;
+          modalOrigBtn.textContent = `原图 (${fmtSize(blob.size)}) ↺`;
+          modalOrigBtn.title = '当前为原图，点击可强制重新加载';
+
+          attachImageZoomAndTapClose(newImg);
+          commitZoomLayout(newImg);
+          showToast(forceReload ? '已强制刷新原图' : '已加载高清原图！双击或点 [1:1 原图] 查看细节');
         };
 
         newImg.onerror = () => {
@@ -548,6 +681,12 @@ async function openImage(url, label) {
     xhr.send();
   };
 
+  modalOrigBtn.onclick = (e) => {
+    e.stopPropagation();
+    if (modalOrigBtn.disabled) return;
+    loadOriginalWithProgress(!isLargeImage);
+  };
+
   // 保存到相册
   modalSaveBtn.onclick = async (e) => {
     e.stopPropagation();
@@ -556,7 +695,7 @@ async function openImage(url, label) {
       modalSaveBtn.textContent = '处理中...';
       let blob = _currentBlob;
       if (!blob) {
-        const r = await fetch(_currentDisplayUrl);
+        const r = await fetch(_currentFullUrl || _currentDisplayUrl);
         blob = await r.blob();
       }
       const ext = (_currentLabel.split('.').pop() || 'png').toLowerCase();
