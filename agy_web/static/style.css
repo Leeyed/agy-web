@@ -280,6 +280,21 @@
       background: rgba(15, 23, 42, 0.85);
       border-top: 1px solid rgba(255, 255, 255, 0.08);
     }
+    .inline-img-preview.img-error, .img-card.img-error {
+      border-color: #ef444455;
+      background: rgba(239, 68, 68, 0.06);
+    }
+    .inline-img-preview.img-error img, .img-card.img-error img {
+      opacity: 0.25;
+      filter: grayscale(1);
+    }
+    .inline-img-preview.img-error .inline-img-cap::after, .img-card.img-error .cap::after {
+      content: " (404 磁盘未找到)";
+      color: #f87171;
+      font-size: 10px;
+      font-weight: 500;
+      margin-left: 4px;
+    }
 
     /* Modal bottom-right floating actions */
     .modal-fab-bar {

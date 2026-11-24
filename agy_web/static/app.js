@@ -97,10 +97,21 @@ function showToast(text, duration = 2500) {
   }, duration);
 }
 
+const BASE_PATH = (window.location.pathname.match(/^(\/proxy\/[^\/]+)/) || ['',''])[1];
+
 function withNode(url) {
-  if (!_currentNode || _currentNode === 'local') return url;
-  if (!url.startsWith('/api/') || url.startsWith('/api/nodes') || url.startsWith('/api/login')) return url;
-  return url + (url.includes('?') ? '&' : '?') + 'node=' + encodeURIComponent(_currentNode);
+  let u = url;
+  if (_currentNode && _currentNode !== 'local') {
+    if (u.startsWith('/api/') && !u.startsWith('/api/nodes') && !u.startsWith('/api/login')) {
+      if (!/[?&]node=/.test(u)) {
+        u = u + (u.includes('?') ? '&' : '?') + 'node=' + encodeURIComponent(_currentNode);
+      }
+    }
+  }
+  if (BASE_PATH && typeof u === 'string' && u.startsWith('/') && !u.startsWith(BASE_PATH + '/')) {
+    u = BASE_PATH + u;
+  }
+  return u;
 }
 
 const _origFetch = window.fetch.bind(window);
@@ -121,37 +132,46 @@ function renderInlineMd(text) {
     codes.push(`<code>${code}</code>`);
     return `\x00C${idx}\x00`;
   });
-  s = s.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+|file:\/\/[^\s)]+)\)/g, (_, label, url) => {
+  s = s.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+|file:\/\/[^\s)]+|\/[^\s)]+)\)/g, (_, label, url) => {
     let p = url;
     let full = url;
     let thumb = url;
     if (url.startsWith('file://')) {
-      p = url.slice(7).split('#')[0];
+      p = url.slice(7).split('#')[0].split('?')[0];
+      full = withNode(`/api/file?path=${encodeURIComponent(p)}`);
+      thumb = withNode(`/api/file?path=${encodeURIComponent(p)}&thumb=1`);
+    } else if (url.startsWith('/')) {
+      p = url.split('#')[0].split('?')[0];
       full = withNode(`/api/file?path=${encodeURIComponent(p)}`);
       thumb = withNode(`/api/file?path=${encodeURIComponent(p)}&thumb=1`);
     }
     const name = label || (p.split('/').pop() || 'image');
     return `<div class="inline-img-preview" data-url="${esc(full)}" data-name="${esc(name)}">
-      <img src="${esc(thumb)}" loading="lazy" alt="${esc(name)}" />
+      <img src="${esc(thumb)}" loading="lazy" alt="${esc(name)}" onerror="this.onerror=null;this.closest('.inline-img-preview').classList.add('img-error');" />
       <div class="inline-img-cap">🖼️ ${esc(name)}</div>
     </div>`;
   });
-  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|file:\/\/[^\s)]+)\)/g, (_, label, url) => {
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|file:\/\/[^\s)]+|\/[^\s)]+)\)/g, (_, label, url) => {
+    let p = url;
     if (url.startsWith('file://')) {
-      const p = url.slice(7).split('#')[0];
-      if (/\.(png|jpg|jpeg|webp|gif|svg)$/i.test(p)) {
-        const full = withNode(`/api/file?path=${encodeURIComponent(p)}`);
-        const thumb = withNode(`/api/file?path=${encodeURIComponent(p)}&thumb=1`);
-        return `<div class="inline-img-preview" data-url="${esc(full)}" data-name="${esc(label)}">
-          <img src="${esc(thumb)}" loading="lazy" alt="${esc(label)}" />
-          <div class="inline-img-cap">🖼️ ${esc(label)}</div>
-        </div>`;
-      }
+      p = url.slice(7).split('#')[0].split('?')[0];
+    } else if (url.startsWith('/')) {
+      p = url.split('#')[0].split('?')[0];
+    }
+    if ((url.startsWith('file://') || url.startsWith('/')) && /\.(png|jpg|jpeg|webp|gif|svg)$/i.test(p)) {
+      const full = withNode(`/api/file?path=${encodeURIComponent(p)}`);
+      const thumb = withNode(`/api/file?path=${encodeURIComponent(p)}&thumb=1`);
+      return `<div class="inline-img-preview" data-url="${esc(full)}" data-name="${esc(label)}">
+        <img src="${esc(thumb)}" loading="lazy" alt="${esc(label)}" onerror="this.onerror=null;this.closest('.inline-img-preview').classList.add('img-error');" />
+        <div class="inline-img-cap">🖼️ ${esc(label)}</div>
+      </div>`;
+    }
+    if (url.startsWith('file://') || url.startsWith('/')) {
       return `<span>${label}</span>`;
     }
     if (/\.(png|jpg|jpeg|webp|gif|svg)(\?.*)?$/i.test(url)) {
       return `<div class="inline-img-preview" data-url="${esc(url)}" data-name="${esc(label)}">
-        <img src="${esc(url)}" loading="lazy" alt="${esc(label)}" />
+        <img src="${esc(url)}" loading="lazy" alt="${esc(label)}" onerror="this.onerror=null;this.closest('.inline-img-preview').classList.add('img-error');" />
         <div class="inline-img-cap">🖼️ ${esc(label)}</div>
       </div>`;
     }
@@ -622,10 +642,10 @@ function render() {
     if (m.images && m.images.length) {
       html += '<div class="images-grid">';
       for (const img of m.images) {
-        const fullUrl = `/api/file?path=${encodeURIComponent(img.path)}`;
-        const thumbUrl = withNode(`${fullUrl}&thumb=1`);
+        const fullUrl = withNode(`/api/file?path=${encodeURIComponent(img.path)}`);
+        const thumbUrl = withNode(`/api/file?path=${encodeURIComponent(img.path)}&thumb=1`);
         html += `<div class="img-card" data-url="${esc(fullUrl)}" data-name="${esc(img.name)}">
-          <img src="${esc(thumbUrl)}" loading="lazy" alt="${esc(img.name)}" />
+          <img src="${esc(thumbUrl)}" loading="lazy" alt="${esc(img.name)}" onerror="this.onerror=null;this.closest('.img-card').classList.add('img-error');" />
           <div class="cap">${esc(img.name)}</div>
         </div>`;
       }
@@ -1106,10 +1126,10 @@ async function openGallery(silent) {
     modalBody.innerHTML = '<div style="color:#9ca3af">No images found in recent conversations</div>';
   } else {
     const cards = data.images.map(img => {
-      const fullUrl = `/api/file?path=${encodeURIComponent(img.path)}&v=${Math.floor(img.mtime || 0)}`;
-      const thumbUrl = withNode(`${fullUrl}&thumb=1`);
+      const fullUrl = withNode(`/api/file?path=${encodeURIComponent(img.path)}&v=${Math.floor(img.mtime || 0)}`);
+      const thumbUrl = withNode(`/api/file?path=${encodeURIComponent(img.path)}&v=${Math.floor(img.mtime || 0)}&thumb=1`);
       return `<div class="img-card" data-url="${esc(fullUrl)}" data-name="${esc(img.name)}">
-        <img src="${esc(thumbUrl)}" loading="lazy" alt="${esc(img.name)}" />
+        <img src="${esc(thumbUrl)}" loading="lazy" alt="${esc(img.name)}" onerror="this.onerror=null;this.closest('.img-card').classList.add('img-error');" />
         <div class="cap" title="${esc(img.rel)}">${esc(img.rel)}</div>
       </div>`;
     }).join('');

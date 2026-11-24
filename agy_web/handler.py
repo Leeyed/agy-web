@@ -118,19 +118,20 @@ _LOGIN_HTML = """<!doctype html>
     const pw = document.getElementById('pw');
     const btn = document.getElementById('btn');
     const err = document.getElementById('err');
+    const BASE_PATH = (window.location.pathname.match(/^(\/proxy\/[^\/]+)/) || ['',''])[1];
     f.onsubmit = async (e) => {
       e.preventDefault();
       err.textContent = '';
       btn.disabled = true;
       try {
-        const res = await fetch('/api/login', {
+        const res = await fetch((BASE_PATH || '') + '/api/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ password: pw.value })
         });
         const data = await res.json().catch(() => ({}));
         if (res.ok && data.ok) {
-          location.replace('/');
+          location.replace(BASE_PATH ? BASE_PATH + '/' : '/');
         } else {
           err.textContent = data.error || '密码错误';
           pw.select();

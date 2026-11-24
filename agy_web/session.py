@@ -35,6 +35,7 @@ def _host_last_session_file() -> Path:
 
 
 def load_last_session() -> str:
+    saved_cid = ""
     for path in (_host_last_session_file(), LAST_SESSION_FILE):
         try:
             if path.is_file():
@@ -42,11 +43,32 @@ def load_last_session() -> str:
                 if isinstance(data, dict):
                     cid = str(data.get("conversation_id") or "").strip()
                     if cid:
-                        return cid
+                        saved_cid = cid
+                        break
         except Exception:
             pass
+
     latest = list_existing_conversations(limit=1)
-    return str(latest[0]["id"]) if latest else ""
+    latest_cid = str(latest[0]["id"]) if latest else ""
+
+    if not saved_cid:
+        return latest_cid
+    if not latest_cid or saved_cid == latest_cid:
+        return saved_cid
+
+    # If both exist, compare transcript mtimes:
+    # If the latest conversation on disk is newer than saved_cid by more than 15 minutes,
+    # the user was likely active in CLI/IDE, so load the active one.
+    try:
+        saved_tf = BRAIN_DIR / saved_cid / ".system_generated" / "logs" / "transcript.jsonl"
+        latest_tf = BRAIN_DIR / latest_cid / ".system_generated" / "logs" / "transcript.jsonl"
+        saved_mt = saved_tf.stat().st_mtime if saved_tf.is_file() else 0.0
+        latest_mt = latest_tf.stat().st_mtime if latest_tf.is_file() else 0.0
+        if latest_mt > saved_mt + 900.0:
+            return latest_cid
+    except Exception:
+        pass
+    return saved_cid
 
 
 def _save_last_session(cid: str) -> None:
@@ -107,6 +129,7 @@ class ConvSlot:
         self.stop_requested: bool = False
         self.turn_gen: int = 0
         self.last_transcript_mtime: float = 0.0
+        self.pinned: bool = False
 
 
 class SessionManager:
@@ -162,33 +185,58 @@ class SessionManager:
         return True
 
     def _watch_transcript_loop(self) -> None:
+        check_counter = 0
         while True:
             time.sleep(2.0)
+            check_counter += 1
             with self._lock:
-                slot = self._slots[self._active_key]
-                if slot.busy or not slot.cid:
+                slot = self._slots.get(self._active_key)
+                if not slot:
                     continue
+                is_busy = slot.busy
                 key = slot.key
                 cid = slot.cid
                 last_mt = slot.last_transcript_mtime
-            tfile = BRAIN_DIR / cid / ".system_generated" / "logs" / "transcript.jsonl"
-            try:
-                mt = tfile.stat().st_mtime
-            except OSError:
-                continue
-            if mt > last_mt + 1e-6:
-                msgs, usage = parse_conversation_messages_and_usage(cid, self.cwd, self.allowed_roots)
-                with self._lock:
-                    cur = self._slots.get(key)
-                    if cur and not cur.busy and cur.cid == cid:
-                        if cur.stop_requested and msgs and msgs[-1].get("role") == "assistant":
-                            msgs[-1]["cancelled"] = True
-                        cur.messages = msgs
-                        cur.last_usage = usage
-                        if usage.get("tps") and usage["tps"] != "-":
-                            cur.tps = usage["tps"]
-                        cur.last_transcript_mtime = mt
-                self._broadcast_state()
+                is_pinned = getattr(slot, "pinned", False)
+
+            if not is_busy and cid:
+                tfile = BRAIN_DIR / cid / ".system_generated" / "logs" / "transcript.jsonl"
+                try:
+                    mt = tfile.stat().st_mtime
+                except OSError:
+                    mt = 0.0
+                if mt > last_mt + 1e-6:
+                    msgs, usage = parse_conversation_messages_and_usage(cid, self.cwd, self.allowed_roots)
+                    with self._lock:
+                        cur = self._slots.get(key)
+                        if cur and not cur.busy and cur.cid == cid:
+                            if cur.stop_requested and msgs and msgs[-1].get("role") == "assistant":
+                                msgs[-1]["cancelled"] = True
+                            cur.messages = msgs
+                            cur.last_usage = usage
+                            if usage.get("tps") and usage["tps"] != "-":
+                                cur.tps = usage["tps"]
+                            cur.last_transcript_mtime = mt
+                    self._broadcast_state()
+
+            # Periodically (every ~10s), if current slot is idle and unpinned, auto-follow active CLI conversations
+            if check_counter >= 5:
+                check_counter = 0
+                if not is_busy and not is_pinned:
+                    try:
+                        latest_list = list_existing_conversations(limit=1)
+                        if latest_list:
+                            newest_cid = str(latest_list[0]["id"])
+                            if newest_cid and newest_cid != cid:
+                                new_tf = BRAIN_DIR / newest_cid / ".system_generated" / "logs" / "transcript.jsonl"
+                                if new_tf.is_file():
+                                    new_mt = new_tf.stat().st_mtime
+                                    cur_tf = (BRAIN_DIR / cid / ".system_generated" / "logs" / "transcript.jsonl") if cid else None
+                                    cur_mt = cur_tf.stat().st_mtime if (cur_tf and cur_tf.is_file()) else 0.0
+                                    if new_mt > cur_mt + 60.0:
+                                        self.load_existing(newest_cid, pinned=False)
+                    except Exception:
+                        pass
 
     def _slot_stats(self, slot: ConvSlot) -> Dict[str, Any]:
         u = slot.last_usage or {}
@@ -289,12 +337,13 @@ class SessionManager:
         self._broadcast_state()
         return True, str(self.cwd)
 
-    def load_existing(self, cid: str) -> Tuple[bool, str]:
+    def load_existing(self, cid: str, pinned: bool = True) -> Tuple[bool, str]:
         switched_info: Optional[str] = None
         with self._lock:
             existing = self._slots.get(cid)
             if existing is not None:
                 self._active_key = cid
+                existing.pinned = pinned
                 msg_count = len(existing.messages)
                 status = "running" if existing.busy else "idle"
                 switched_info = f"Switched to {cid[:8]} ({status}, messages={msg_count})"
@@ -323,8 +372,14 @@ class SessionManager:
                 slot.last_usage = usage
                 slot.tps = str(usage.get("tps") or "-")
                 slot.last_transcript_mtime = mt
+                slot.pinned = pinned
                 self._slots[cid] = slot
             else:
+                slot.messages = msgs
+                slot.last_usage = usage
+                slot.tps = str(usage.get("tps") or "-")
+                slot.last_transcript_mtime = mt
+                slot.pinned = pinned
                 if not slot.model:
                     slot.model = chosen_model
             self._active_key = cid

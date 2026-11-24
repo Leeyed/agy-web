@@ -10,10 +10,24 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .config import BRAIN_DIR, IMAGE_EXTS
 
-_IMG_PATH_PATTERN = re.compile(
-    r"(?:file://)?([^\s)\"\'`<>]+?\.(?:png|jpg|jpeg|webp|gif|svg))",
-    re.IGNORECASE,
-)
+def _extract_candidate_image_paths(text: str) -> List[str]:
+    if not text:
+        return []
+    candidates: List[str] = []
+    # 1. Markdown link / image target: ![label](url) or [label](url)
+    for m in re.finditer(r"!?\[[^\]]*\]\(\s*(?:file://)?([^\s)]+)\s*\)", text):
+        candidates.append(m.group(1))
+    # 2. Explicit file:// URIs
+    for m in re.finditer(r"file://([^\s\"\'`<>\[\]\)]+)", text):
+        candidates.append(m.group(1))
+    # 3. Delimited or quoted paths (backticks, quotes, parens, spaces)
+    for m in re.finditer(
+        r"(?:^|[\s\"\'`\(<])([^\s\"\'`\(\)<>\[\]]+\.(?:png|jpg|jpeg|webp|gif|svg))",
+        text,
+        re.IGNORECASE,
+    ):
+        candidates.append(m.group(1))
+    return candidates
 
 
 def is_within_roots(target: Path, roots: List[Path]) -> bool:
@@ -46,9 +60,13 @@ def extract_images_from_text(
         return []
     seen: Set[str] = set()
     found: List[Dict[str, str]] = []
-    for m in _IMG_PATH_PATTERN.finditer(text):
-        raw = m.group(1).strip()
-        p = Path(os.path.expanduser(raw))
+    for raw in _extract_candidate_image_paths(text):
+        c = raw.split("#")[0].split("?")[0].strip(".,;:!?'\"`()[]")
+        if c.startswith("file://"):
+            c = c[7:]
+        if not c:
+            continue
+        p = Path(os.path.expanduser(c))
         if not p.is_absolute() and cwd is not None:
             p = cwd / p
         try:
@@ -71,9 +89,13 @@ def _collect_images_from_text(
 ) -> None:
     if not text:
         return
-    for m in _IMG_PATH_PATTERN.finditer(text):
-        raw = m.group(1).strip()
-        p = Path(os.path.expanduser(raw))
+    for raw in _extract_candidate_image_paths(text):
+        c = raw.split("#")[0].split("?")[0].strip(".,;:!?'\"`()[]")
+        if c.startswith("file://"):
+            c = c[7:]
+        if not c:
+            continue
+        p = Path(os.path.expanduser(c))
         if not p.is_absolute() and cwd is not None:
             p = cwd / p
         try:
