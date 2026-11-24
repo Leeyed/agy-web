@@ -38,6 +38,9 @@ let _currentDisplayUrl = '';
 let _currentFullUrl = '';
 let _currentLabel = '';
 let _currentBlob = null;
+let _currentBlobUrl = null;
+let _currentXhr = null;
+let _currentFileSize = 0;
 let _pendingUploads = [];
 let _nodeOffline = false;
 let _nodeErrorMsg = '';
@@ -283,16 +286,30 @@ document.addEventListener('gesturestart', (e) => {
 let zoomState = { scale: 1, tx: 0, ty: 0 };
 
 function applyZoomTransform(img) {
-  img.style.transform = `translate(${zoomState.tx}px, ${zoomState.ty}px) scale(${zoomState.scale})`;
+  const el = img || document.getElementById('zoomImg');
+  if (el) {
+    el.style.transform = `translate(${zoomState.tx}px, ${zoomState.ty}px) scale(${zoomState.scale})`;
+  }
 }
 
 function closeModal() {
   _modalView = null;
+  if (_currentXhr) {
+    try { _currentXhr.abort(); } catch (e) {}
+    _currentXhr = null;
+  }
+  if (_currentBlobUrl) {
+    try { URL.revokeObjectURL(_currentBlobUrl); } catch (e) {}
+    _currentBlobUrl = null;
+  }
+  clearModalHandlers();
   if (modalFabBar) modalFabBar.style.display = 'none';
   imgModal.classList.remove('open');
   modalBody.classList.remove('gallery-mode');
+  modalBody.innerHTML = '';
   zoomState = { scale: 1, tx: 0, ty: 0 };
   _currentBlob = null;
+  _currentFileSize = 0;
 }
 
 function attachImageZoomAndTapClose(img) {
@@ -381,11 +398,21 @@ function attachImageZoomAndTapClose(img) {
 }
 
 async function openImage(url, label) {
+  if (_currentXhr) {
+    try { _currentXhr.abort(); } catch (e) {}
+    _currentXhr = null;
+  }
+  if (_currentBlobUrl) {
+    try { URL.revokeObjectURL(_currentBlobUrl); } catch (e) {}
+    _currentBlobUrl = null;
+  }
+
   const baseUrl = url.replace(/[&?](thumb|preview)=1/g, '');
   const fullUrl = withNode(baseUrl);
   _currentFullUrl = fullUrl;
   _currentLabel = label || 'Image';
   _currentBlob = null;
+  _currentFileSize = 0;
 
   modalTitle.textContent = label || 'Image Preview';
   modalRawLink.style.display = 'inline-block';
@@ -393,7 +420,7 @@ async function openImage(url, label) {
   modalBody.classList.remove('gallery-mode');
   if (modalFabBar) modalFabBar.style.display = 'flex';
 
-  modalOrigBtn.disabled = false;
+  modalOrigBtn.disabled = true;
   modalOrigBtn.style.display = 'flex';
   modalOrigBtn.textContent = '原图';
   modalSaveBtn.disabled = false;
@@ -408,13 +435,22 @@ async function openImage(url, label) {
       if (infoRes.ok) {
         const info = await infoRes.json();
         if (info && info.size) {
-          modalOrigBtn.textContent = `原图 (${fmtSize(info.size)})`;
+          _currentFileSize = info.size;
           if (info.size > 3 * 1024 * 1024) {
             displayUrl = withNode(baseUrl + (baseUrl.includes('?') ? '&' : '?') + 'preview=1');
+            modalOrigBtn.disabled = false;
+            modalOrigBtn.textContent = `原图 (${fmtSize(info.size)})`;
+          } else {
+            modalOrigBtn.disabled = true;
+            modalOrigBtn.textContent = `已是原图 (${fmtSize(info.size)})`;
           }
         }
       }
     } catch (e) {}
+  }
+  if (!_currentFileSize) {
+    modalOrigBtn.disabled = false;
+    modalOrigBtn.textContent = '原图';
   }
   _currentDisplayUrl = displayUrl;
 
@@ -429,41 +465,86 @@ async function openImage(url, label) {
     if (modalOrigBtn.disabled) return;
     modalOrigBtn.disabled = true;
     modalOrigBtn.textContent = '0%';
+
     const xhr = new XMLHttpRequest();
+    _currentXhr = xhr;
     xhr.open('GET', fullUrl, true);
     xhr.responseType = 'blob';
+
     xhr.onprogress = (ev) => {
-      if (ev.lengthComputable && ev.total > 0) {
-        const pct = Math.round((ev.loaded / ev.total) * 100);
+      const total = (ev.lengthComputable && ev.total > 0) ? ev.total : _currentFileSize;
+      if (total > 0) {
+        const pct = Math.min(99, Math.round((ev.loaded / total) * 100));
         modalOrigBtn.textContent = `${pct}%`;
       } else {
-        modalOrigBtn.textContent = '下载中...';
+        modalOrigBtn.textContent = `下载中 (${fmtSize(ev.loaded)})`;
       }
     };
+
     xhr.onload = () => {
+      _currentXhr = null;
       if (xhr.status >= 200 && xhr.status < 300) {
-        modalOrigBtn.textContent = '100%';
+        modalOrigBtn.textContent = '刷新中...';
         const blob = xhr.response;
         _currentBlob = blob;
+        _currentDisplayUrl = fullUrl;
         const blobUrl = URL.createObjectURL(blob);
-        const zImg = document.getElementById('zoomImg');
-        if (zImg) {
-          zImg.src = blobUrl;
-        }
-        setTimeout(() => {
-          modalOrigBtn.textContent = '已是原图';
-        }, 200);
+
+        // Preload Image to avoid WebKit composited layer freeze bug
+        const newImg = new Image();
+        newImg.id = 'zoomImg';
+        newImg.alt = esc(_currentLabel);
+
+        newImg.onload = () => {
+          const oldImg = document.getElementById('zoomImg');
+          newImg.style.opacity = '0.7';
+          if (oldImg && oldImg.parentNode) {
+            oldImg.parentNode.replaceChild(newImg, oldImg);
+          } else {
+            modalBody.innerHTML = '';
+            modalBody.appendChild(newImg);
+          }
+
+          requestAnimationFrame(() => {
+            newImg.style.transition = 'opacity 0.2s ease';
+            newImg.style.opacity = '1';
+            setTimeout(() => { if (newImg) newImg.style.transition = ''; }, 250);
+          });
+
+          applyZoomTransform(newImg);
+          attachImageZoomAndTapClose(newImg);
+
+          if (_currentBlobUrl) {
+            try { URL.revokeObjectURL(_currentBlobUrl); } catch (e) {}
+          }
+          _currentBlobUrl = blobUrl;
+
+          modalOrigBtn.disabled = true;
+          modalOrigBtn.textContent = `已是原图 (${fmtSize(blob.size)})`;
+          showToast('已切换为原图');
+        };
+
+        newImg.onerror = () => {
+          modalOrigBtn.disabled = false;
+          modalOrigBtn.textContent = '重试原图';
+          showToast('原图解码失败');
+        };
+
+        newImg.src = blobUrl;
       } else {
         modalOrigBtn.disabled = false;
         modalOrigBtn.textContent = '重试原图';
         showToast('原图加载失败');
       }
     };
+
     xhr.onerror = () => {
+      _currentXhr = null;
       modalOrigBtn.disabled = false;
       modalOrigBtn.textContent = '重试原图';
       showToast('网络异常，原图加载失败');
     };
+
     xhr.send();
   };
 
